@@ -171,7 +171,7 @@ impl PeerLink {
     /// sample applied, or `None` if no path RTT is available yet.
     pub fn sample_rtt(&self, estimator: &mut RttEstimator) -> Option<u32> {
         let d = self.current_rtt()?;
-        let ms = u32::try_from(d.as_millis().min(u64::from(u32::MAX) as u128)).unwrap_or(u32::MAX);
+        let ms = u32::try_from(d.as_millis().min(u128::from(u64::from(u32::MAX)))).unwrap_or(u32::MAX);
         estimator.sample(ms);
         Some(ms)
     }

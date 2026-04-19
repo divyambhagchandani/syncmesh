@@ -8,8 +8,6 @@
 //! The public surface is intentionally narrow: `syncmesh-core` stays I/O-free,
 //! and the binary composes these pieces into the full mesh.
 
-#![allow(clippy::pedantic)]
-
 pub mod framing;
 pub mod identity;
 pub mod mesh;

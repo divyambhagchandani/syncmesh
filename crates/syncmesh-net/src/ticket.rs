@@ -1,7 +1,7 @@
 //! Ticket format for sharing a room with a friend.
 //!
 //! A ticket is a human-shareable string that a joiner pastes into their TUI. It
-//! encodes an `iroh::EndpointAddr` — the host's EndpointId plus any direct IP
+//! encodes an `iroh::EndpointAddr` — the host's `EndpointId` plus any direct IP
 //! addresses and/or relay URLs known at room-creation time.
 //!
 //! Wire format:

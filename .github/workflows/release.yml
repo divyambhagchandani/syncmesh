@@ -92,17 +92,38 @@ jobs:
             --wait
           xcrun stapler staple "$BIN" || true
 
-      # Windows signing — only runs if a cert is provisioned.
-      - name: signtool (Windows)
-        if: runner.os == 'Windows' && env.WINDOWS_CERT_BASE64 != ''
-        env:
-          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        shell: pwsh
+      # Windows signing via SignPath.io (free for qualifying open-source
+      # projects; see packaging/SETUP.md). Only runs when the org has
+      # provisioned the SIGNPATH_API_TOKEN secret and set the
+      # SIGNPATH_ORG_ID / SIGNPATH_PROJECT_SLUG variables.
+      - name: stage unsigned exe (Windows)
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORG_ID != ''
+        shell: bash
         run: |
-          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64)
-          [IO.File]::WriteAllBytes("cert.pfx", $bytes)
-          & signtool sign /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 target/${{ matrix.target }}/release/syncmesh.exe
+          mkdir -p unsigned
+          cp "target/${{ matrix.target }}/release/syncmesh.exe" unsigned/syncmesh.exe
+
+      - name: upload unsigned exe for SignPath
+        id: upload-unsigned
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORG_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: unsigned/syncmesh.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: SignPath sign
+        if: runner.os == 'Windows' && vars.SIGNPATH_ORG_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: "release-signing"
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: target/${{ matrix.target }}/release/
 
       - name: package
         shell: bash
@@ -160,3 +181,21 @@ jobs:
           files: dist/*
           draft: true
           generate_release_notes: true
+
+  homebrew-bump:
+    name: bump Homebrew tap formula
+    needs: release
+    runs-on: ubuntu-latest
+    # Only runs if the maintainer has set HOMEBREW_TAP (e.g. "owner/homebrew-tap")
+    # as a repository variable and provided HOMEBREW_TAP_TOKEN (a PAT with
+    # write access to the tap repo) as a secret.
+    if: vars.HOMEBREW_TAP != ''
+    steps:
+      - name: bump formula
+        uses: dawidd6/action-homebrew-bump-formula@v4
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          tap: ${{ vars.HOMEBREW_TAP }}
+          formula: syncmesh
+          tag: ${{ github.event.inputs.tag || github.ref_name }}
+          no_fork: true

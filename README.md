@@ -29,19 +29,21 @@ Your mpv instances stay in sync on pause / seek / speed changes. Chat over the m
 
 ## Install
 
-### Pre-built binaries
-
-Download from [releases](https://github.com/divyambhagchandani/syncmesh/releases). Drop `syncmesh` (or `syncmesh.exe`) into your `$PATH`. SHA256 checksums are published alongside every artifact.
-
-**macOS**: binaries are unsigned in v0.1. After downloading, run once:
+### macOS / Linux — Homebrew (recommended)
 
 ```sh
-xattr -r -d com.apple.quarantine ./syncmesh
+brew tap divyambhagchandani/syncmesh
+brew install syncmesh
 ```
 
-Signed + notarized builds will follow once there's external uptake.
+`brew install` strips the macOS quarantine attribute, so you never see a Gatekeeper warning. Works on both Apple Silicon and Intel Macs, and on Linux (x86_64 + aarch64).
 
-**Windows**: unsigned. SmartScreen will warn on first launch; click "more info → run anyway". winget packaging follows signing.
+### Direct download
+
+Get the tarball/zip from [releases](https://github.com/divyambhagchandani/syncmesh/releases) and drop `syncmesh` (or `syncmesh.exe`) into your `$PATH`. SHA256 checksums are published alongside every artifact.
+
+- **macOS direct download** — run `xattr -r -d com.apple.quarantine ./syncmesh` once to bypass Gatekeeper (or just use Homebrew above, which handles this for you).
+- **Windows** — binaries are signed via [SignPath.io](https://signpath.org) for qualifying releases; during the initial reputation-building window SmartScreen may still warn. Click "more info → run anyway" on first launch.
 
 ### From source
 

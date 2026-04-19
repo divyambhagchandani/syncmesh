@@ -24,5 +24,5 @@ pub use command::MpvCommand;
 pub use error::{MpvError, MpvExit};
 pub use event::MpvEvent;
 pub use ipc::{IpcClient, OBSERVED_PROPERTIES};
-pub use process::{MpvHandle, SpawnOptions, spawn};
+pub use process::{MpvHandle, SpawnOptions, connect, spawn};
 pub use transport::{IpcTransport, connect_transport, generate_ipc_path};

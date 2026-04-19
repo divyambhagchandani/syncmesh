@@ -16,7 +16,7 @@
 //!   integration tests; not suitable for actual NAT traversal.
 
 use iroh::endpoint::presets;
-use iroh::{Endpoint, EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey};
 
 use crate::peer::{PeerLink, PeerLinkError};
 use crate::ticket;
@@ -40,18 +40,31 @@ pub enum MeshError {
 }
 
 /// Transport-level configuration for a mesh endpoint.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MeshConfig {
     /// Use the localhost-friendly preset (no relay, no DNS address lookup).
     /// Always `false` for production use; `true` for integration tests.
     pub localhost_only: bool,
+    /// When `Some`, override the default (n0) relay with this custom URL.
+    /// Ignored if `localhost_only` is `true` (that preset disables relays
+    /// entirely). Per decision 21 we keep this hidden from the UI — it's a
+    /// config-file-only knob for users running their own iroh-relay.
+    pub relay_override: Option<RelayUrl>,
 }
 
 impl MeshConfig {
     pub const fn localhost() -> Self {
         Self {
             localhost_only: true,
+            relay_override: None,
         }
+    }
+
+    /// Builder-style setter for the self-hosted relay URL.
+    #[must_use]
+    pub fn with_relay_override(mut self, url: RelayUrl) -> Self {
+        self.relay_override = Some(url);
+        self
     }
 }
 
@@ -68,16 +81,20 @@ impl MeshEndpoint {
             Endpoint::builder(presets::Minimal)
                 .secret_key(secret)
                 .alpns(vec![ALPN.to_vec()])
-                .relay_mode(iroh::RelayMode::Disabled)
+                .relay_mode(RelayMode::Disabled)
                 .bind_addr("127.0.0.1:0")
                 .map_err(|e| MeshError::Bind(e.to_string()))?
                 .bind()
                 .await
                 .map_err(|e| MeshError::Bind(e.to_string()))?
         } else {
-            Endpoint::builder(presets::N0)
+            let mut builder = Endpoint::builder(presets::N0)
                 .secret_key(secret)
-                .alpns(vec![ALPN.to_vec()])
+                .alpns(vec![ALPN.to_vec()]);
+            if let Some(relay) = config.relay_override {
+                builder = builder.relay_mode(RelayMode::custom([relay]));
+            }
+            builder
                 .bind()
                 .await
                 .map_err(|e| MeshError::Bind(e.to_string()))?

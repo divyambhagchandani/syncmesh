@@ -220,3 +220,31 @@ pub async fn spawn(
 fn ipc_path_to_arg(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
+
+/// Connect to an existing mpv IPC socket/pipe that we did not spawn ourselves.
+///
+/// Used by the "Lua-script power mode" flow (plan decision 16, Phase 6): the
+/// user launches mpv their own way and loads the bundled Lua script which
+/// exposes a predictable IPC endpoint; syncmesh talks to it without owning
+/// the child.
+///
+/// No watcher runs in this mode — we don't own the mpv process, so we can't
+/// meaningfully report its exit status. The returned [`MpvHandle`] is fully
+/// usable for commands and events; `shutdown` will close the IPC stream but
+/// leaves mpv running.
+pub async fn connect(
+    ipc_path: &Path,
+    timeout: Duration,
+) -> Result<(MpvHandle, mpsc::Receiver<MpvEvent>), MpvError> {
+    info!(?ipc_path, "connecting to user-launched mpv");
+    let transport = connect_transport(ipc_path, timeout).await?;
+    let (client, events) = IpcClient::start(transport).await?;
+    Ok((
+        MpvHandle {
+            client: Some(client),
+            exit_rx: None,
+            child: Arc::new(StdMutex::new(None)),
+        },
+        events,
+    ))
+}

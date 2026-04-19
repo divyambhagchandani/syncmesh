@@ -159,15 +159,21 @@ pub async fn spawn(
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let mut guard = match watcher_child.lock() {
-                Ok(g) => g,
-                Err(_) => return,
+            let Ok(mut guard) = watcher_child.lock() else {
+                // Poisoned mutex — another thread panicked while holding it.
+                // Nothing more this watcher can do.
+                return;
             };
             let status = match guard.as_mut() {
                 Some(c) => match c.try_wait() {
                     Ok(Some(s)) => Some(s),
                     Ok(None) => None,
-                    Err(_) => None,
+                    Err(e) => {
+                        // try_wait rarely fails, but if the OS refuses to
+                        // report status we treat it as "not yet" and retry.
+                        debug!(?e, "try_wait failed; retrying");
+                        None
+                    }
                 },
                 None => {
                     // Someone took the child out. Nothing to report.

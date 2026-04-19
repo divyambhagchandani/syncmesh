@@ -13,8 +13,6 @@
 //! owning the transport lets us mock cleanly with [`tokio::io::duplex`] in
 //! tests.
 
-#![allow(clippy::pedantic)]
-
 pub mod command;
 pub mod error;
 pub mod event;

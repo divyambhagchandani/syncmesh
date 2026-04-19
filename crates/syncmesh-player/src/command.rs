@@ -41,6 +41,9 @@ impl MpvCommand {
         let args: Vec<serde_json::Value> = match self {
             Self::Pause(p) => vec![json!("set_property"), json!("pause"), json!(*p)],
             Self::Seek { media_pos_ms } => {
+                // Seek positions are bounded by realistic media durations;
+                // precision loss at 2^52 ms (~143k years) is not a concern.
+                #[allow(clippy::cast_precision_loss)]
                 let secs = (*media_pos_ms as f64) / 1000.0;
                 vec![json!("seek"), json!(secs), json!("absolute")]
             }

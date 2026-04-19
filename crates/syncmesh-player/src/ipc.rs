@@ -220,7 +220,7 @@ where
         };
         // Command reply?
         if let Some(obj) = value.as_object() {
-            if let Some(id) = obj.get("request_id").and_then(|v| v.as_u64()) {
+            if let Some(id) = obj.get("request_id").and_then(serde_json::Value::as_u64) {
                 let error = obj
                     .get("error")
                     .and_then(|v| v.as_str())
@@ -298,7 +298,7 @@ mod tests {
             let id = v
                 .as_object()
                 .and_then(|o| o.get("request_id"))
-                .and_then(|v| v.as_u64());
+                .and_then(serde_json::Value::as_u64);
             if let Some(id) = id {
                 let reply =
                     serde_json::json!({"request_id": id, "error": "success", "data": null});
@@ -321,7 +321,7 @@ mod tests {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
                 let id = v
                     .get("request_id")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .expect("must have request_id");
                 let reply =
                     serde_json::json!({"request_id": id, "error": "success", "data": null});
@@ -370,7 +370,7 @@ mod tests {
             let mut lines = BufReader::new(r).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let id = v.get("request_id").and_then(|v| v.as_u64()).unwrap();
+                let id = v.get("request_id").and_then(serde_json::Value::as_u64).unwrap();
                 let cmd = v.get("command").unwrap().as_array().unwrap();
                 let first = cmd[0].as_str().unwrap();
                 let reply = if first == "observe_property" {
@@ -431,7 +431,7 @@ mod tests {
             for _ in 0..OBSERVABLE_PROPERTIES.len() {
                 if let Ok(Some(line)) = lines.next_line().await {
                     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                    let id = v.get("request_id").and_then(|v| v.as_u64()).unwrap();
+                    let id = v.get("request_id").and_then(serde_json::Value::as_u64).unwrap();
                     let reply = serde_json::json!({"request_id": id, "error": "success"});
                     let line_out = format!("{reply}\n");
                     let _ = w.write_all(line_out.as_bytes()).await;
@@ -446,7 +446,7 @@ mod tests {
             loop {
                 match events.recv().await {
                     Some(MpvEvent::Shutdown) => return true,
-                    Some(_) => continue,
+                    Some(_) => {}
                     None => return false,
                 }
             }
@@ -471,7 +471,7 @@ mod tests {
             let _ = w.flush().await;
             while let Ok(Some(line)) = lines.next_line().await {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let id = v.get("request_id").and_then(|v| v.as_u64()).unwrap();
+                let id = v.get("request_id").and_then(serde_json::Value::as_u64).unwrap();
                 let reply = serde_json::json!({"request_id": id, "error": "success"});
                 let _ = w
                     .write_all(format!("{reply}\n").as_bytes())

@@ -47,7 +47,7 @@ pub fn generate_ipc_path() -> PathBuf {
 /// the connect succeeds or `total_wait` elapses.
 ///
 /// mpv creates the socket/pipe a short while *after* it starts, so the first
-/// few connect attempts routinely fail with NotFound. We poll with a small
+/// few connect attempts routinely fail with `NotFound`. We poll with a small
 /// fixed backoff rather than exponential — the window is usually <100 ms and
 /// the wait cap is <5 s.
 pub async fn connect_transport(
@@ -63,7 +63,7 @@ pub async fn connect_transport(
         };
         if tokio::time::Instant::now() >= deadline {
             return Err(MpvError::Connect {
-                waited_ms: total_wait.as_millis() as u64,
+                waited_ms: u64::try_from(total_wait.as_millis()).unwrap_or(u64::MAX),
                 source: last_err,
             });
         }
@@ -78,15 +78,13 @@ async fn connect_once(path: &Path) -> io::Result<Box<dyn IpcTransport>> {
 }
 
 #[cfg(windows)]
+// Kept `async` so Windows and Unix call sites share one signature.
+#[allow(clippy::unused_async)]
 async fn connect_once(path: &Path) -> io::Result<Box<dyn IpcTransport>> {
     use tokio::net::windows::named_pipe::ClientOptions;
     // mpv's named pipe is opened with GENERIC_READ|GENERIC_WRITE on its
     // side; the default ClientOptions read+write access matches.
-    let path_str = path.to_string_lossy();
-    // ClientOptions::open takes a &Path/OsStr. On Windows stable the argument
-    // is any `AsRef<OsStr>`. Using `path` directly works.
     let p = ClientOptions::new().open(path)?;
-    let _ = path_str; // silence unused in case of future logging rework
     Ok(Box::new(p))
 }
 

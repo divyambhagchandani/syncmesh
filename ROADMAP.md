@@ -77,6 +77,23 @@ Three real watch nights with at least two distinct machine setups (ideally mixed
 
 ### Work items
 
+**Progress at time of writing** (branch `feat/phase-6`):
+
+- ✅ #1 Config file — shipped in `bin/syncmesh/src/config.rs` with 4 unit tests, template drop on first run, CLI>file>default precedence.
+- ✅ #2 Logging flags — `--verbose` and `--log-file` via `tracing-appender`, JSON file sink.
+- ✅ #3 Self-hosted relay — `MeshConfig::with_relay_override`; `relay = "..."` config key.
+- ✅ #4 QR-code invites — `qrcode` behind `qr` feature, Unicode half-blocks.
+- ✅ #5 Lua-script power mode — `scripts/syncmesh.lua`; `syncmesh_player::connect()` entry point; `--no-spawn` flag.
+- ⬜ #6 Cross-compile matrix — scaffolded in `.github/workflows/release.yml` (5 targets, musl via `cargo-zigbuild`). Needs first tag to exercise.
+- ⬜ #7 Signing — unsigned v0.1 ships; docs covered in README. Cert decision deferred.
+- ⬜ #8 Release CI — workflow skeleton landed (builds, optional signing gates, SHA256 aggregation, draft release). Needs tag push to smoke-test.
+- ⬜ #9 Distribution channels — README mentions GitHub Releases; Homebrew/winget/AUR/install-script deferred.
+- ✅ #10 README — shipped: quickstart, keybinds, config, CLI, Lua workflow, FAQ, troubleshooting, credits.
+- ⬜ #11 iroh 1.0 upgrade — gated on iroh 1.0 release.
+- ✅ #12 Observability debug pane — `Ctrl-D` toggles a bottom-right overlay with per-peer RTT + drift + room counters. 3 new tests.
+
+Remaining for v0.1 tag: smoke-test the release workflow, pick signing posture, decide whether to ship Homebrew/winget now or post-release. Everything else is merged.
+
 #### 1. Config file (~1 day)
 
 - Location: `directories::ProjectDirs::from("", "", "syncmesh").config_dir()/config.toml`.

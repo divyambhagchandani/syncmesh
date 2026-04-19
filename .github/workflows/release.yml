@@ -1,0 +1,162 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Release builds should be deterministic; pin the exact tag that triggered us.
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zigbuild: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zigbuild: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_zigbuild: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_zigbuild: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_zigbuild: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: install zig (musl targets only)
+        if: matrix.use_zigbuild
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.13.0"
+
+      - name: install cargo-zigbuild
+        if: matrix.use_zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: build
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_zigbuild }}" = "true" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+
+      # macOS signing — only runs if the team provides secrets.
+      - name: codesign (macOS)
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_IDENTITY != ''
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          BIN=target/${{ matrix.target }}/release/syncmesh
+          codesign --sign "$APPLE_SIGNING_IDENTITY" --options runtime --timestamp "$BIN"
+          ditto -c -k --keepParent "$BIN" syncmesh.zip
+          xcrun notarytool submit syncmesh.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$BIN" || true
+
+      # Windows signing — only runs if a cert is provisioned.
+      - name: signtool (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_CERT_BASE64 != ''
+        env:
+          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64)
+          [IO.File]::WriteAllBytes("cert.pfx", $bytes)
+          & signtool sign /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td sha256 /fd sha256 target/${{ matrix.target }}/release/syncmesh.exe
+
+      - name: package
+        shell: bash
+        run: |
+          set -eu
+          BIN_DIR=target/${{ matrix.target }}/release
+          OUT_DIR=dist
+          mkdir -p "$OUT_DIR"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$OUT_DIR/syncmesh-${{ env.RELEASE_TAG }}-${{ matrix.target }}.zip" "$BIN_DIR/syncmesh.exe" scripts/syncmesh.lua
+          else
+            tar -czf "$OUT_DIR/syncmesh-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz" -C "$BIN_DIR" syncmesh -C ../../../ scripts/syncmesh.lua
+          fi
+
+      - name: sha256
+        shell: bash
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum * > SHA256SUMS-${{ matrix.target }}
+          else
+            shasum -a 256 * > SHA256SUMS-${{ matrix.target }}
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncmesh-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: aggregate SHA256SUMS
+        run: |
+          cd dist
+          cat SHA256SUMS-* > SHA256SUMS
+          rm SHA256SUMS-*
+
+      - name: create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: dist/*
+          draft: true
+          generate_release_notes: true

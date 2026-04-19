@@ -16,9 +16,9 @@ Stack: Rust 2024 + tokio + iroh + mpvipc. Single static binary per OS, no runtim
 | 3 | Sync state machine (`syncmesh-core`) | ✅ done |
 | 4 | Full-mesh + end-to-end wiring in the binary | ✅ done |
 | 5 | TUI + chat (`bin/syncmesh`) | ✅ done |
-| 6 | Polish, packaging, release | ⬜ next |
+| 6 | Polish, packaging, release | 🟡 in progress — config file, logging flags, self-hosted relay, QR, Lua mode, observability debug pane, release CI skeleton, README all shipped. Cross-compile matrix + signing + distribution + iroh 1.0 upgrade remain. |
 
-Workspace state: **217 tests passing** (100 core + 5 proptest + 4 simulator + 13 net + 6 loopback + 55 bin + 1 mesh_3peer — plus 33 `syncmesh-player` tests that require a local mpv), clippy-clean with `pedantic` + `-D warnings` (`--all-features`), CI matrix green on Linux/macOS/Windows. `syncmesh-core` line coverage: **97.77%** (measured via `cargo llvm-cov`). Bin crate grew +7 tests on branch `docs/roadmap-phase6-plan` (Phase 5 polish: splash + chat scrollback + `App` Debug; plus `AddrRegistry::apply_announce` guard tests).
+Workspace state: **224 tests passing** (100 core + 5 proptest + 4 simulator + 13 net + 6 loopback + 55 bin + 1 mesh_3peer — plus 33 `syncmesh-player` tests that require a local mpv), clippy-clean with `pedantic` + `-D warnings` (`--all-features`), CI matrix green on Linux/macOS/Windows. `syncmesh-core` line coverage: **97.77%** (measured via `cargo llvm-cov`). Bin crate grew +7 tests on branch `docs/roadmap-phase6-plan` (Phase 5 polish: splash + chat scrollback + `App` Debug; plus `AddrRegistry::apply_announce` guard tests).
 
 Pinned decisions: see [Decision index](#decision-index) at the bottom — the 22 locked-in choices from the original spec. Nothing there has changed.
 

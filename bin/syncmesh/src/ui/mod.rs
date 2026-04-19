@@ -47,6 +47,9 @@ pub struct UiContext {
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
+/// Lines PgUp/PgDn advance the chat scroll. Kept small; user can hold.
+const CHAT_SCROLL_STEP: u16 = 5;
+
 /// Enter raw mode + alternate screen, then run the render + input loop until
 /// `Quit` is emitted or the snapshot channel closes.
 pub async fn run_ui(
@@ -151,6 +154,23 @@ fn handle_key(ui: &mut UiState, action: KeyAction, ctx: &UiContext) -> Option<Ui
             let text = ui.input.take();
             ui.mode = Mode::Normal;
             text.map(UiEvent::SubmitChat)
+        }
+        KeyAction::ChatScrollUp => {
+            ui.chat_follow = false;
+            ui.chat_scroll = ui.chat_scroll.saturating_add(CHAT_SCROLL_STEP);
+            None
+        }
+        KeyAction::ChatScrollDown => {
+            ui.chat_scroll = ui.chat_scroll.saturating_sub(CHAT_SCROLL_STEP);
+            if ui.chat_scroll == 0 {
+                ui.chat_follow = true;
+            }
+            None
+        }
+        KeyAction::ChatScrollBottom => {
+            ui.chat_scroll = 0;
+            ui.chat_follow = true;
+            None
         }
         KeyAction::Emit(UiEvent::CopyTicket) => {
             let Some(ticket) = ctx.ticket.as_deref() else {

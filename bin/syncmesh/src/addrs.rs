@@ -62,6 +62,18 @@ impl AddrRegistry {
             self.known.insert(self_node, bytes);
         }
     }
+
+    /// Fold an inbound `PresenceEvent::AddrAnnounce` payload into the
+    /// registry. Returns `true` iff the announcement was recorded (rejects
+    /// empty bytes and self-announcements). Extracted so the policy has a
+    /// single testable home.
+    pub fn apply_announce(&mut self, node: NodeId, addr_bytes: &[u8], local: NodeId) -> bool {
+        if node == local || addr_bytes.is_empty() {
+            return false;
+        }
+        self.known.insert(node, addr_bytes.to_vec());
+        true
+    }
 }
 
 /// Postcard-encode an `EndpointAddr`. Returns `None` if encoding fails — which
@@ -137,5 +149,33 @@ mod tests {
         r.insert(node(3), vec![1, 2, 3]);
         r.insert(node(3), vec![9, 9, 9]);
         assert_eq!(r.get(&node(3)), Some([9, 9, 9].as_slice()));
+    }
+
+    #[test]
+    fn apply_announce_records_new_peer() {
+        let mut r = AddrRegistry::new();
+        let bytes = encode_addr(&sample_addr()).unwrap();
+        let recorded = r.apply_announce(node(1), &bytes, node(99));
+        assert!(recorded);
+        assert_eq!(r.get(&node(1)), Some(bytes.as_slice()));
+    }
+
+    #[test]
+    fn apply_announce_rejects_self() {
+        // Two common ways this can happen: a legitimate self-echo via the
+        // relay, or a hostile peer forging our NodeId. Either way, skip it.
+        let mut r = AddrRegistry::new();
+        let bytes = encode_addr(&sample_addr()).unwrap();
+        let recorded = r.apply_announce(node(1), &bytes, node(1));
+        assert!(!recorded);
+        assert_eq!(r.get(&node(1)), None);
+    }
+
+    #[test]
+    fn apply_announce_rejects_empty_bytes() {
+        let mut r = AddrRegistry::new();
+        let recorded = r.apply_announce(node(1), &[], node(99));
+        assert!(!recorded);
+        assert_eq!(r.get(&node(1)), None);
     }
 }

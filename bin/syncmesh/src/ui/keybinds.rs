@@ -31,6 +31,13 @@ pub enum KeyAction {
     ChatWordDelete,
     /// Submit the chat input buffer as a message (Enter in chat mode).
     ChatSubmit,
+    /// Scroll the chat pane toward older messages. Disables follow-mode.
+    ChatScrollUp,
+    /// Scroll the chat pane toward newer messages. Re-enables follow-mode
+    /// once we reach the bottom.
+    ChatScrollDown,
+    /// Jump to the newest chat message and re-enable follow-mode.
+    ChatScrollBottom,
     /// Enter a different mode.
     SetMode(Mode),
     /// Ignore this key.
@@ -67,6 +74,9 @@ fn translate_normal(ev: KeyEvent) -> KeyAction {
         KeyCode::Char('/') => KeyAction::SetMode(Mode::Chat),
         KeyCode::Tab => KeyAction::Emit(UiEvent::ToggleOverride),
         KeyCode::Char('?') => KeyAction::SetMode(Mode::Help),
+        KeyCode::PageUp => KeyAction::ChatScrollUp,
+        KeyCode::PageDown => KeyAction::ChatScrollDown,
+        KeyCode::End => KeyAction::ChatScrollBottom,
         _ => KeyAction::Ignore,
     }
 }
@@ -81,6 +91,11 @@ fn translate_chat(ev: KeyEvent) -> KeyAction {
         KeyCode::Enter => KeyAction::ChatSubmit,
         KeyCode::Esc => KeyAction::SetMode(Mode::Normal),
         KeyCode::Backspace => KeyAction::ChatBackspace,
+        // PgUp/PgDn work in chat mode too so you can peek at scrollback while
+        // composing. End jumps back to the bottom.
+        KeyCode::PageUp => KeyAction::ChatScrollUp,
+        KeyCode::PageDown => KeyAction::ChatScrollDown,
+        KeyCode::End => KeyAction::ChatScrollBottom,
         KeyCode::Char(c) => KeyAction::ChatAppend(c),
         _ => KeyAction::Ignore,
     }
@@ -203,6 +218,38 @@ mod tests {
         assert_eq!(
             translate(Mode::Help, key(KeyCode::Esc)),
             KeyAction::SetMode(Mode::Normal)
+        );
+    }
+
+    #[test]
+    fn normal_pageup_scrolls_chat_up() {
+        assert_eq!(
+            translate(Mode::Normal, key(KeyCode::PageUp)),
+            KeyAction::ChatScrollUp
+        );
+    }
+
+    #[test]
+    fn normal_pagedown_scrolls_chat_down() {
+        assert_eq!(
+            translate(Mode::Normal, key(KeyCode::PageDown)),
+            KeyAction::ChatScrollDown
+        );
+    }
+
+    #[test]
+    fn normal_end_jumps_chat_to_bottom() {
+        assert_eq!(
+            translate(Mode::Normal, key(KeyCode::End)),
+            KeyAction::ChatScrollBottom
+        );
+    }
+
+    #[test]
+    fn chat_mode_pageup_also_scrolls() {
+        assert_eq!(
+            translate(Mode::Chat, key(KeyCode::PageUp)),
+            KeyAction::ChatScrollUp
         );
     }
 

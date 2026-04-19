@@ -11,8 +11,10 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "syncmesh", version, about = "P2P Syncplay alternative for mpv")]
 pub struct Cli {
+    /// Subcommand to run. When absent we print a short splash and exit 0 so
+    /// `syncmesh` by itself doesn't error out at users who forgot the verb.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Nickname shown to other peers.
     #[arg(long, global = true)]

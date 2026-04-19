@@ -92,7 +92,6 @@ struct LivePeer {
     writer: mpsc::Sender<Frame>,
 }
 
-#[allow(missing_debug_implementations)]
 pub struct App {
     state: RoomState,
     mesh: MeshEndpoint,
@@ -119,6 +118,26 @@ pub struct App {
     /// Set on `PlaybackRestart` if a seek was in progress; the next `TimePos`
     /// is the seek target and must be evaluated for local broadcast.
     seek_just_completed: bool,
+}
+
+// Hand-rolled because `MeshEndpoint`, `MpvHandle`, `PeerLink`, and the mpsc /
+// watch channel ends intentionally don't implement `Debug`. Skip those and
+// surface a connection-count summary instead of the full peer map.
+impl std::fmt::Debug for App {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("App")
+            .field("state", &self.state)
+            .field("local", &self.local)
+            .field("mpv_spawned", &self.mpv.is_some())
+            .field("peer_count", &self.peers.len())
+            .field("pending_dials", &self.pending_dials)
+            .field("addrs", &self.addrs)
+            .field("echo", &self.echo)
+            .field("media", &self.media)
+            .field("seek_in_progress", &self.seek_in_progress)
+            .field("seek_just_completed", &self.seek_just_completed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl App {
@@ -410,10 +429,8 @@ impl App {
         // are transport-layer concerns the core crate doesn't know about.
         if let Frame::Presence(ref presence) = frame {
             match presence {
-                PresenceEvent::AddrAnnounce { node, addr_bytes }
-                    if !addr_bytes.is_empty() && *node != self.local =>
-                {
-                    self.addrs.insert(*node, addr_bytes.clone());
+                PresenceEvent::AddrAnnounce { node, addr_bytes } => {
+                    self.addrs.apply_announce(*node, addr_bytes, self.local);
                 }
                 PresenceEvent::PeerList { peers } => {
                     for (node, _nick, addr_bytes) in peers {

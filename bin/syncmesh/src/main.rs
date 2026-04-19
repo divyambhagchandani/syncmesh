@@ -20,9 +20,15 @@ use syncmesh::ui::{self, UiContext, UiEvent};
 const EVENT_QUEUE: usize = 1024;
 
 #[tokio::main(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     init_tracing();
     let cli = Cli::parse();
+
+    let Some(command) = cli.command else {
+        print_splash();
+        return Ok(());
+    };
 
     let paths = Paths::discover()?;
     info!(config_dir = %paths.config_dir.display(), "config loaded");
@@ -42,7 +48,7 @@ async fn main() -> Result<()> {
     let (mpv_handle, mpv_events) = if cli.no_mpv {
         (None, None)
     } else {
-        let file = match &cli.command {
+        let file = match &command {
             Command::Create { file } | Command::Join { file, .. } => file.clone(),
         };
         let (h, rx) = spawn_mpv(cli.mpv_binary.clone(), file).await?;
@@ -84,7 +90,7 @@ async fn main() -> Result<()> {
     peer_task::spawn_accept_task(mesh.clone(), events_tx.clone());
 
     // Subcommand side-effects (print/parse ticket, dial host).
-    let ticket_for_ui = match &cli.command {
+    let ticket_for_ui = match &command {
         Command::Create { .. } => {
             let ticket = mesh.ticket();
             if cli.no_ui {
@@ -154,6 +160,16 @@ async fn spawn_mpv(
     opts.initial_file = initial_file;
     let (handle, events) = mpv_spawn(opts).await.context("spawning mpv")?;
     Ok((handle, events))
+}
+
+fn print_splash() {
+    println!("syncmesh — P2P Syncplay alternative for mpv");
+    println!();
+    println!("USAGE:");
+    println!("  syncmesh create [--file PATH]          start a room, print a ticket to share");
+    println!("  syncmesh join <TICKET> [--file PATH]   join an existing room");
+    println!();
+    println!("Run `syncmesh --help` for all options.");
 }
 
 fn init_tracing() {

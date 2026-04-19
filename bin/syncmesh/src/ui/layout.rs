@@ -25,18 +25,28 @@ use super::input::ChatInput;
 
 /// UI-local state not owned by `RoomSnapshot`: input mode, input buffer,
 /// ephemeral flash messages, chat scroll offset.
+///
+/// `chat_scroll` is the number of lines the user has scrolled *up* from the
+/// bottom of the chat pane. 0 means pinned to the newest message; higher
+/// values reveal older messages. Follow mode (`chat_follow`) keeps the user
+/// pinned to the bottom automatically when new messages arrive; any `PgUp`
+/// disables it, `End` / `PgDn`-past-bottom re-enables it.
 #[derive(Debug, Default)]
 pub struct UiState {
     pub mode: Mode,
     pub input: ChatInput,
     pub flash: Option<String>,
     pub chat_scroll: u16,
+    pub chat_follow: bool,
 }
 
 impl UiState {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            chat_follow: true,
+            ..Self::default()
+        }
     }
 }
 
@@ -174,10 +184,23 @@ fn render_chat(frame: &mut Frame<'_>, area: Rect, snap: &RoomSnapshot, ui: &UiSt
         })
         .collect();
 
+    // Translate the "lines scrolled up from bottom" convention stored in
+    // `ui.chat_scroll` into the top-anchored offset ratatui wants. If there
+    // are more messages than fit, follow-mode or a non-zero chat_scroll keeps
+    // the bottom visible; if they all fit we pass 0.
+    let max_offset = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_sub(area.height);
+    let scroll_from_top = if ui.chat_follow {
+        max_offset
+    } else {
+        max_offset.saturating_sub(ui.chat_scroll)
+    };
+
     let block = Block::default().borders(Borders::NONE).title("Chat");
     let para = Paragraph::new(lines)
         .block(block)
-        .scroll((ui.chat_scroll, 0))
+        .scroll((scroll_from_top, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
 }

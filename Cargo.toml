@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/syncmesh-core",
+    "crates/syncmesh-net",
+    "crates/syncmesh-player",
+    "bin/syncmesh",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/divyamehta/syncmesh"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }
+thiserror = "2"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+# Faster link times on Windows MSVC
+debug = 1

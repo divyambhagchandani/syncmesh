@@ -38,6 +38,9 @@ pub struct UiState {
     pub flash: Option<String>,
     pub chat_scroll: u16,
     pub chat_follow: bool,
+    /// Observability pane (Ctrl-D). Hidden by default; visible when the
+    /// user is tuning drift tiers or hunting mystery RTT spikes.
+    pub debug_visible: bool,
 }
 
 impl UiState {
@@ -74,9 +77,61 @@ pub fn render(frame: &mut Frame<'_>, snapshot: &RoomSnapshot, ui: &UiState) {
     render_input(frame, rows[2], ui);
     render_keyhints(frame, rows[3], ui);
 
+    if ui.debug_visible {
+        render_debug_overlay(frame, area, snapshot);
+    }
     if ui.mode == Mode::Help {
         render_help_overlay(frame, area);
     }
+}
+
+fn render_debug_overlay(frame: &mut Frame<'_>, area: Rect, snap: &RoomSnapshot) {
+    // Bottom-right, ~36 cols × (peers + 3) rows. Clamped to the available
+    // area so small terminals don't render off-screen.
+    let h = u16::try_from(snap.peers.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(3);
+    let h = h.min(area.height.saturating_sub(2)).max(3);
+    let w = 42u16.min(area.width.saturating_sub(2));
+    let x = area.right().saturating_sub(w + 1);
+    let y = area.bottom().saturating_sub(h + 2); // leave room for input + keyhints
+    let popup = Rect::new(x, y, w, h);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(snap.peers.len() + 2);
+    lines.push(Line::from(Span::styled(
+        format!(
+            "peers: {}   ready: {}   override: {}",
+            snap.peers.len() + 1,
+            match snap.ready_state {
+                ReadyState::AllReady => "all",
+                ReadyState::Pending => "pending",
+            },
+            if snap.override_enabled { "on" } else { "off" },
+        ),
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(Line::from(Span::raw(
+        "──────────────────────────────────────",
+    )));
+    for peer in &snap.peers {
+        let rtt = peer
+            .rtt_ms
+            .map_or("  --".to_string(), |m| format!("{m:>4}"));
+        let drift = peer
+            .drift_ms
+            .map_or("     ".to_string(), |d| format!("{d:+5}"));
+        let nick: String = peer.nickname.chars().take(16).collect();
+        lines.push(Line::from(Span::raw(format!(
+            "{nick:<16}  rtt {rtt}ms  drift {drift}ms"
+        ))));
+    }
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title("debug (Ctrl-D)")
+        .borders(Borders::ALL);
+    let para = Paragraph::new(lines).block(block);
+    frame.render_widget(para, popup);
 }
 
 fn render_status_bar(frame: &mut Frame<'_>, area: Rect, snap: &RoomSnapshot) {
@@ -225,7 +280,7 @@ fn render_input(frame: &mut Frame<'_>, area: Rect, ui: &UiState) {
 fn render_keyhints(frame: &mut Frame<'_>, area: Rect, ui: &UiState) {
     let hints = match ui.mode {
         Mode::Normal => {
-            "r ready   c copy ticket   space pause   / chat   tab override   ? help   q quit"
+            "r ready   c copy   space pause   / chat   tab override   ctrl-d debug   ? help   q quit"
         }
         Mode::Chat => "enter send   esc cancel   ctrl-w delete word",
         Mode::Help => "press any key to close",
@@ -244,6 +299,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, area: Rect) {
         Line::from("  space     toggle pause for the mesh"),
         Line::from("  /         enter chat mode"),
         Line::from("  tab       toggle ready-gate override"),
+        Line::from("  ctrl-d    toggle debug pane (RTT / drift)"),
         Line::from("  ?         show this help"),
         Line::from("  q         quit"),
         Line::from(""),
@@ -405,6 +461,35 @@ mod tests {
         let text = render_to_buffer(&snap, &ui);
         assert!(text.contains("> hello"), "expected > hello in:\n{text}");
         assert!(text.contains("enter send"));
+    }
+
+    #[test]
+    fn debug_overlay_renders_when_visible() {
+        let snap = make_snapshot("me", true, false);
+        let mut ui = UiState::new();
+        ui.debug_visible = true;
+        let text = render_to_buffer(&snap, &ui);
+        assert!(
+            text.contains("debug (Ctrl-D)"),
+            "expected debug overlay title in:\n{text}"
+        );
+        // Peer row shows the rtt we synthesized (42).
+        assert!(
+            text.contains("42"),
+            "expected rtt=42 in debug pane:\n{text}"
+        );
+        assert!(
+            text.contains("alice"),
+            "expected peer nickname in debug pane:\n{text}"
+        );
+    }
+
+    #[test]
+    fn debug_overlay_hidden_by_default() {
+        let snap = make_snapshot("me", true, false);
+        let ui = UiState::new();
+        let text = render_to_buffer(&snap, &ui);
+        assert!(!text.contains("debug (Ctrl-D)"));
     }
 
     #[test]

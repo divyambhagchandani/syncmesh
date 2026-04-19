@@ -40,6 +40,9 @@ pub enum KeyAction {
     ChatScrollBottom,
     /// Enter a different mode.
     SetMode(Mode),
+    /// Toggle the observability debug pane (Ctrl-D). Purely UI-local; does
+    /// not affect the event loop.
+    ToggleDebug,
     /// Ignore this key.
     Ignore,
 }
@@ -56,6 +59,11 @@ pub fn translate(mode: Mode, ev: KeyEvent) -> KeyAction {
     // Ctrl-C always quits, in any mode.
     if ev.modifiers.contains(KeyModifiers::CONTROL) && matches!(ev.code, KeyCode::Char('c')) {
         return KeyAction::Emit(UiEvent::Quit);
+    }
+
+    // Ctrl-D toggles the observability debug pane, in any mode.
+    if ev.modifiers.contains(KeyModifiers::CONTROL) && matches!(ev.code, KeyCode::Char('d')) {
+        return KeyAction::ToggleDebug;
     }
 
     match mode {
@@ -167,6 +175,19 @@ mod tests {
             translate(Mode::Chat, ctrl(KeyCode::Char('c'))),
             KeyAction::Emit(UiEvent::Quit)
         );
+    }
+
+    #[test]
+    fn ctrl_d_toggles_debug_in_normal_and_chat() {
+        // Help mode has a pre-existing fast-path that dismisses on any key;
+        // we intentionally don't special-case Ctrl-D there.
+        for mode in [Mode::Normal, Mode::Chat] {
+            assert_eq!(
+                translate(mode, ctrl(KeyCode::Char('d'))),
+                KeyAction::ToggleDebug,
+                "Ctrl-D should toggle debug in mode {mode:?}"
+            );
+        }
     }
 
     #[test]

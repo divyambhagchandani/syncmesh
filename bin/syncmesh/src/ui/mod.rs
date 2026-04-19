@@ -172,6 +172,10 @@ fn handle_key(ui: &mut UiState, action: KeyAction, ctx: &UiContext) -> Option<Ui
             ui.chat_follow = true;
             None
         }
+        KeyAction::ToggleDebug => {
+            ui.debug_visible = !ui.debug_visible;
+            None
+        }
         KeyAction::Emit(UiEvent::CopyTicket) => {
             let Some(ticket) = ctx.ticket.as_deref() else {
                 ui.flash = Some("no ticket to copy".into());

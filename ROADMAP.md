@@ -19,12 +19,12 @@ Companion to [PLAN.md](PLAN.md). Where PLAN.md is a status board, this doc is th
 
 ## Where we are
 
-As of [commit `24af7a9`](https://github.com/divyambhagchandani/syncmesh/commit/24af7a9):
+As of [commit `062f449`](https://github.com/divyambhagchandani/syncmesh/commit/062f449) on branch `docs/roadmap-phase6-plan`:
 
 - ✅ **Phase 0–3** — scaffolding, mpv integration, two-peer mesh, sync state machine. Shipped.
 - ✅ **Phase 4** — end-to-end wiring in the binary **including N>2 full-mesh dialing** (decisions 4 and 8). `PresenceEvent::PeerList` carries opaque postcard-encoded `EndpointAddr` bytes; new `PresenceEvent::AddrAnnounce` for on-connect broadcasts; `AddrRegistry` in the bin layer plumbs the address flow. Three-peer integration test ([`bin/syncmesh/tests/mesh_3peer.rs`](bin/syncmesh/tests/mesh_3peer.rs)) proves a peer joining via a second-hop ticket establishes a direct link to the original host and exchanges control frames without transiting the middleman.
-- ✅ **Phase 5** — TUI + chat. `RoomState::snapshot()` projects into an immutable `RoomSnapshot`; App publishes it on a `tokio::sync::watch` channel after every dispatch; a `ui/` task reads at its own cadence, translates crossterm key events into `UiEvent`s, and pushes them back through an mpsc. Clipboard copy behind the default `clipboard` feature. `--no-ui` flag for headless/CI runs. 48 bin-crate tests (19 pre-UI + 29 new for ui modules + layout `TestBackend` rendering), all passing.
-- 🧮 **Test count**: 210 passing, clippy-clean with `-D warnings --all-features`.
+- ✅ **Phase 5** — TUI + chat. `RoomState::snapshot()` projects into an immutable `RoomSnapshot`; App publishes it on a `tokio::sync::watch` channel after every dispatch; a `ui/` task reads at its own cadence, translates crossterm key events into `UiEvent`s, and pushes them back through an mpsc. Clipboard copy behind the default `clipboard` feature. `--no-ui` flag for headless/CI runs. Three Phase-5-polish items landed on top: splash screen on no-subcommand, PgUp/PgDn chat scrollback with follow-mode auto-reset, and a hand-rolled `App::Debug`. 55 bin-crate tests (was 48), all passing.
+- 🧮 **Test count**: 217 passing, clippy-clean with `-D warnings --all-features`.
 
 What's left: Phase 6 (polish, packaging, release) plus a deliberate dogfooding week to calibrate the open questions from the original spec, plus a short list of deferred polish items and test-coverage gaps.
 
@@ -34,8 +34,8 @@ What's left: Phase 6 (polish, packaging, release) plus a deliberate dogfooding w
 
 1. **Dogfooding week** (~5 days) — real watch nights to answer four spec-open questions and surface packaging papercuts before they become user-visible defects. Zero code change assumed; the payload is issue tickets + a list of calibration tweaks.
 2. **Phase 6** (~7–10 days focused work) — config file, logging, self-hosted relay plumbing, QR-code invites, Lua power mode, cross-compile CI for five targets, signing strategy, distribution channels, README, iroh 1.0 upgrade pass, observability debug pane. Exit criterion: **v0.1.0 released; single binary <15 MB per platform; first external user completes the invite flow without help.**
-3. **Phase 5 deferred polish** (~1–2 days) — splash screen, chat scrollback keybinds, small App ergonomics. Nothing blocking; lands alongside Phase 6.
-4. **Test-coverage gaps** (~1 day) — one higher-level UiEvent→App→Output integration test; an `AddrAnnounce` round-trip test; an `App` snapshot-drives-UI smoke test. Insurance against regressions during Phase 6 churn.
+3. **Phase 5 deferred polish** (~0.5 day remaining) — splash screen ✅, chat scrollback keybinds ✅, `App` Debug impl ✅ all shipped in [`062f449`](https://github.com/divyambhagchandani/syncmesh/commit/062f449). IME / non-ASCII chat input hardening and terminal-resize manual checklist remain; neither blocks v0.1.
+4. **Test-coverage gaps** (~0.5 day remaining) — `AddrAnnounce` policy guard ✅ and chat-ring eviction ✅ now covered (the latter was already green; plan line was stale). The higher-level `UiEvent` → `App` → `Output` integration test and the `RoomState` → snapshot → UI smoke are still open.
 
 Everything in this list is scoped in detail below.
 
@@ -205,13 +205,13 @@ Semver policy: **v0.x** until the ticket format + config file schema + CLI surfa
 
 ## Phase 5 polish items deferred to Phase 6
 
-The Phase 5 implementation shipped the core TUI and chat flow but flagged a few things as non-blocking. Slot them into Phase 6.
+The Phase 5 implementation shipped the core TUI and chat flow but flagged a few things as non-blocking. Items 1–3 shipped in [commit `062f449`](https://github.com/divyambhagchandani/syncmesh/commit/062f449); 4 and 5 remain.
 
-1. **Splash screen** (~0.5 day) — when `syncmesh` is invoked with no subcommand, show "[c]reate room / [j]oin room — paste ticket then Enter". Today the binary exits with a clap error. Adds a tiny "mom can use this" surface.
-2. **Chat scrollback keybinds** (~0.5 day) — PgUp/PgDn are documented in the plan but not emitted by the UI. The layout already supports scroll via `ui.chat_scroll`; just wire the key events. Should also implement the "follow mode" auto-reset: any new inbound chat that arrives while the user is scrolled to the bottom keeps them pinned at the bottom; if they've scrolled up, they stay put.
-3. **`App` Debug impl** (~0.1 day) — currently suppressed with `#[allow(missing_debug_implementations)]`. Add a hand-rolled `Debug` that skips the `MeshEndpoint`/`MpvHandle` interior types. Housekeeping.
-4. **IME / non-ASCII chat input** (~0.5 day, maybe more) — today `KeyCode::Char(c)` just appends; no IME composition. Goal for v0.1 is "doesn't crash". If it does crash on Japanese/Korean input during dogfooding, prioritize accordingly.
-5. **Terminal resize robustness** — ratatui handles resize transparently, but should be a manual checklist item before release (80×24 → 200×60, min/max bounds).
+1. ✅ **Splash screen** — `syncmesh` with no subcommand now prints a short usage splash (`create` / `join <TICKET>`) and exits 0 instead of clap-erroring. `Cli::command` became `Option<Command>`; the splash lives in `main::print_splash`.
+2. ✅ **Chat scrollback keybinds** — PgUp / PgDown / End are wired in both Normal and Chat modes. `chat_scroll` was reframed from "lines from top" to "lines scrolled up from bottom" and a new `chat_follow` flag implements the follow-mode auto-reset: new messages stay pinned to the bottom by default, PgUp breaks follow, End (or scrolling all the way down) re-arms it. Step size is 5 lines.
+3. ✅ **`App` Debug impl** — hand-rolled, skips `MeshEndpoint` / `MpvHandle` / `PeerLink`-bearing fields and the mpsc/watch channel ends; surfaces `mpv_spawned: bool` + `peer_count` instead. Uses `finish_non_exhaustive`.
+4. ⬜ **IME / non-ASCII chat input** (~0.5 day, maybe more) — today `KeyCode::Char(c)` just appends; no IME composition. Goal for v0.1 is "doesn't crash". If it does crash on Japanese/Korean input during dogfooding, prioritize accordingly.
+5. ⬜ **Terminal resize robustness** — ratatui handles resize transparently, but should be a manual checklist item before release (80×24 → 200×60, min/max bounds).
 
 ---
 
@@ -219,11 +219,11 @@ The Phase 5 implementation shipped the core TUI and chat flow but flagged a few 
 
 Mostly insurance against regressions during Phase 6 churn.
 
-1. **End-to-end `UiEvent` → `App` → `Output` test** (~0.5 day) — [`App`](bin/syncmesh/src/app.rs) has no direct test coverage; the 3-peer integration test covers the wire protocol, the TUI tests cover the render tree, but no test exercises "press `r`, assert `PresenceEvent::Ready` broadcast". Wire an in-process App in a test harness: feed it a synthetic `UiEvent::ToggleReady`, observe the per-peer writer mpsc. Would also catch bugs in the snapshot publishing after dispatch.
-2. **`AddrAnnounce` round-trip test** (~0.1 day) — [`mesh_3peer.rs`](bin/syncmesh/tests/mesh_3peer.rs) exercises PeerList-driven dialing but not the AddrAnnounce path. Add a unit test that constructs a `Frame::Presence(PresenceEvent::AddrAnnounce { .. })`, passes it through `on_peer_frame`, asserts the address landed in the registry.
-3. **Snapshot → UI render smoke** (~0.2 day) — every UI render test today uses a hand-constructed `RoomSnapshot`. One test should build a real `RoomState`, drive some inputs, call `.snapshot()`, and render. Catches the "we forgot to add field X to snapshot()" class of bug.
-4. **Larger chat-ring eviction test** — existing test covers append-and-read; no test proves the 200-message cap actually evicts the oldest. Easy to write.
-5. **N>2 disconnect / re-dial test** — would validate the non-goal from the Phase 4 roadmap ("NAT rebinding mid-session"). Not a blocker but worth a spec line.
+1. ⬜ **End-to-end `UiEvent` → `App` → `Output` test** (~0.5 day) — [`App`](bin/syncmesh/src/app.rs) has no direct test coverage; the 3-peer integration test covers the wire protocol, the TUI tests cover the render tree, but no test exercises "press `r`, assert `PresenceEvent::Ready` broadcast". Wire an in-process App in a test harness: feed it a synthetic `UiEvent::ToggleReady`, observe the per-peer writer mpsc. Would also catch bugs in the snapshot publishing after dispatch. *Deferred: requires a real-`MeshEndpoint` test harness; not worth building until another item needs one.*
+2. ✅ **`AddrAnnounce` round-trip** — frame-level encode/decode was already covered by `presence_variants_all_roundtrip` in `crates/syncmesh-core/src/protocol.rs`. The registry-level policy (non-empty + non-self) was extracted from `App::on_peer_frame` into `AddrRegistry::apply_announce` with three unit tests covering happy path, self-skip, and empty-bytes rejection. [`062f449`](https://github.com/divyambhagchandani/syncmesh/commit/062f449).
+3. ⬜ **Snapshot → UI render smoke** (~0.2 day) — every UI render test today uses a hand-constructed `RoomSnapshot`. One test should build a real `RoomState`, drive some inputs, call `.snapshot()`, and render. Catches the "we forgot to add field X to snapshot()" class of bug.
+4. ✅ **Chat-ring eviction** — already covered by `chat_ring_evicts_oldest_beyond_capacity` in `state.rs:1227` (adds 210 msgs, asserts count == 200, verifies the first 10 are gone). The original plan line was out of date.
+5. ⬜ **N>2 disconnect / re-dial test** — would validate the non-goal from the Phase 4 roadmap ("NAT rebinding mid-session"). Not a blocker but worth a spec line.
 
 ---
 

@@ -1381,10 +1381,12 @@ mod tests {
             received_at_ms: 10,
             rtt_sample_ms: None,
         });
-        assert!(
-            outs.iter()
-                .any(|o| matches!(o, Output::Mpv(MpvCommand::Seek { media_pos_ms: 7_500 })))
-        );
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Mpv(MpvCommand::Seek {
+                media_pos_ms: 7_500
+            })
+        )));
         assert!(
             outs.iter()
                 .any(|o| matches!(o, Output::Mpv(MpvCommand::Pause(false))))
@@ -1419,10 +1421,12 @@ mod tests {
             received_at_ms: 10,
             rtt_sample_ms: None,
         });
-        assert!(
-            outs.iter()
-                .any(|o| matches!(o, Output::Mpv(MpvCommand::Seek { media_pos_ms: 42_000 })))
-        );
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Mpv(MpvCommand::Seek {
+                media_pos_ms: 42_000
+            })
+        )));
         // No Pause command emitted for a bare Seek.
         assert!(
             !outs

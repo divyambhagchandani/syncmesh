@@ -102,12 +102,18 @@ mod tests {
 
     #[test]
     fn rejects_missing_prefix() {
-        assert!(matches!(decode("not-a-ticket"), Err(TicketError::MissingPrefix)));
+        assert!(matches!(
+            decode("not-a-ticket"),
+            Err(TicketError::MissingPrefix)
+        ));
     }
 
     #[test]
     fn rejects_bad_base32() {
-        assert!(matches!(decode("syncmesh1!!!"), Err(TicketError::Base32(_))));
+        assert!(matches!(
+            decode("syncmesh1!!!"),
+            Err(TicketError::Base32(_))
+        ));
     }
 
     #[test]
@@ -115,6 +121,9 @@ mod tests {
         // Build a valid prefix with a bad version byte.
         let payload = [0xffu8, 0x00, 0x00];
         let enc = format!("{PREFIX}{}", BASE32_NOPAD.encode(&payload));
-        assert!(matches!(decode(&enc), Err(TicketError::UnsupportedVersion(0xff))));
+        assert!(matches!(
+            decode(&enc),
+            Err(TicketError::UnsupportedVersion(0xff))
+        ));
     }
 }

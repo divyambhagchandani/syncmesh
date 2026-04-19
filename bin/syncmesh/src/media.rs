@@ -117,7 +117,9 @@ mod tests {
         c.on_duration_secs(20.0);
         assert!(c.take_if_changed().is_none());
         c.on_file_size(200);
-        let m = c.take_if_changed().expect("second file emits once complete");
+        let m = c
+            .take_if_changed()
+            .expect("second file emits once complete");
         assert_eq!(m.filename_lower, "b.mkv");
         assert_eq!(m.duration_s, 20);
         assert_eq!(m.size_bytes, 200);

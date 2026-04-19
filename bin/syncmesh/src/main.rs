@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::Parser;
 use syncmesh_core::RoomState;
-use syncmesh_net::{MeshConfig, MeshEndpoint, PeerLink, decode_ticket, endpoint_id_to_node, identity};
+use syncmesh_net::{
+    MeshConfig, MeshEndpoint, PeerLink, decode_ticket, endpoint_id_to_node, identity,
+};
 use syncmesh_player::{MpvHandle, SpawnOptions, spawn as mpv_spawn};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -32,8 +34,8 @@ async fn main() -> Result<()> {
 
     let paths = Paths::discover()?;
     info!(config_dir = %paths.config_dir.display(), "config loaded");
-    let secret = identity::load_or_create(&paths.identity)
-        .context("loading or generating identity")?;
+    let secret =
+        identity::load_or_create(&paths.identity).context("loading or generating identity")?;
 
     let mesh = MeshEndpoint::bind(secret, MeshConfig::default())
         .await
@@ -58,8 +60,7 @@ async fn main() -> Result<()> {
     // Room state + event channel
     let state = RoomState::new(local_node, local_nickname.clone());
     let (events_tx, events_rx) = mpsc::channel::<LoopEvent>(EVENT_QUEUE);
-    let (mut app, snapshot_rx) =
-        App::new(state, mesh.clone(), mpv_handle, events_tx.clone());
+    let (mut app, snapshot_rx) = App::new(state, mesh.clone(), mpv_handle, events_tx.clone());
 
     // Ctrl-C
     {

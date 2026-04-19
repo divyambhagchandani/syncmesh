@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::Watcher;
+use iroh::endpoint::{Connection, RecvStream, SendStream};
 use syncmesh_core::{Frame, NodeId, RttEstimator};
 use tokio::sync::Mutex;
 
@@ -171,7 +171,8 @@ impl PeerLink {
     /// sample applied, or `None` if no path RTT is available yet.
     pub fn sample_rtt(&self, estimator: &mut RttEstimator) -> Option<u32> {
         let d = self.current_rtt()?;
-        let ms = u32::try_from(d.as_millis().min(u128::from(u64::from(u32::MAX)))).unwrap_or(u32::MAX);
+        let ms =
+            u32::try_from(d.as_millis().min(u128::from(u64::from(u32::MAX)))).unwrap_or(u32::MAX);
         estimator.sample(ms);
         Some(ms)
     }

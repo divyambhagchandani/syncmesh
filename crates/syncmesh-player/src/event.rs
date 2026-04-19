@@ -152,15 +152,15 @@ mod tests {
     #[test]
     fn file_size_translates_to_u64() {
         let v = json!({"event": "property-change", "name": "file-size", "data": 1_234_567_890u64});
-        assert_eq!(
-            translate(&v),
-            Some(MpvEvent::FileSize(1_234_567_890))
-        );
+        assert_eq!(translate(&v), Some(MpvEvent::FileSize(1_234_567_890)));
     }
 
     #[test]
     fn seeking_event_is_translated() {
-        assert_eq!(translate(&json!({"event": "seek"})), Some(MpvEvent::Seeking));
+        assert_eq!(
+            translate(&json!({"event": "seek"})),
+            Some(MpvEvent::Seeking)
+        );
     }
 
     #[test]

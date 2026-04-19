@@ -10,10 +10,7 @@ use tokio::process::Command;
 #[tokio::main]
 async fn main() {
     let mpv_bin = PathBuf::from(r"C:\Program Files\MPV Player\mpv.exe");
-    let pipe = format!(
-        r"\\.\pipe\syncmesh-dbg-{}",
-        std::process::id()
-    );
+    let pipe = format!(r"\\.\pipe\syncmesh-dbg-{}", std::process::id());
     eprintln!("spawning mpv with ipc = {pipe}");
 
     let mut cmd = Command::new(&mpv_bin);

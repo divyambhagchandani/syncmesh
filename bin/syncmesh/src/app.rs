@@ -47,8 +47,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use syncmesh_core::{
-    ControlAction, Frame, Input, MpvCommand as CoreMpvCommand, NodeId, Notice, Output, PresenceEvent,
-    RoomSnapshot, RoomState,
+    ControlAction, Frame, Input, MpvCommand as CoreMpvCommand, NodeId, Notice, Output,
+    PresenceEvent, RoomSnapshot, RoomState,
 };
 use syncmesh_net::{MeshEndpoint, PeerLink};
 use syncmesh_player::{MpvEvent, MpvHandle};
@@ -70,7 +70,10 @@ const TICK_PERIOD: Duration = Duration::from_secs(1);
 pub enum LoopEvent {
     Mpv(MpvEvent),
     /// A decoded frame arrived from a peer.
-    Peer { from: NodeId, frame: Frame },
+    Peer {
+        from: NodeId,
+        frame: Frame,
+    },
     /// Either an accepted incoming connection or a freshly dialed outbound
     /// one. `addr_bytes` is `Some` when we initiated the dial (we already have
     /// the remote's `EndpointAddr`); `None` when we accepted (iroh doesn't
@@ -80,8 +83,12 @@ pub enum LoopEvent {
         addr_bytes: Option<Vec<u8>>,
     },
     /// A dial task we spawned failed; clear the pending-dials slot.
-    PeerDialFailed { node: NodeId },
-    PeerDisconnected { node: NodeId },
+    PeerDialFailed {
+        node: NodeId,
+    },
+    PeerDisconnected {
+        node: NodeId,
+    },
     /// User pressed Ctrl-C.
     Shutdown,
 }
@@ -408,9 +415,7 @@ impl App {
             return;
         }
         self.apply_and_dispatch(Input::LocalControl {
-            action: ControlAction::SetSpeed {
-                speed_centi: centi,
-            },
+            action: ControlAction::SetSpeed { speed_centi: centi },
             now_ms: now,
         })
         .await;
@@ -560,7 +565,9 @@ impl App {
     async fn dispatch_one(&mut self, out: Output) {
         match out {
             Output::Broadcast(frame) => self.broadcast(self.fill_peer_list_addrs(frame)).await,
-            Output::SendTo { to, frame } => self.send_to(to, self.fill_peer_list_addrs(frame)).await,
+            Output::SendTo { to, frame } => {
+                self.send_to(to, self.fill_peer_list_addrs(frame)).await;
+            }
             Output::Mpv(cmd) => self.send_mpv(cmd).await,
             Output::Notify(notice) => log_notice(&notice),
         }

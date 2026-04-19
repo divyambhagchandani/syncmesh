@@ -16,7 +16,7 @@ pub mod ticket;
 
 pub use framing::{FrameRecvError, FrameSendError, read_frame, write_frame};
 pub use identity::{IdentityError, load_or_create};
-pub use mesh::{MeshConfig, MeshEndpoint, MeshError, ALPN};
+pub use mesh::{ALPN, MeshConfig, MeshEndpoint, MeshError};
 pub use peer::{PeerLink, PeerLinkError};
 pub use ticket::{TicketError, decode as decode_ticket, encode as encode_ticket};
 

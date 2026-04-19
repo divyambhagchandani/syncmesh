@@ -23,10 +23,7 @@ use crate::app::LoopEvent;
 /// upstream is already wedged and dropping is the lesser evil.
 const WRITER_QUEUE: usize = 256;
 
-pub fn spawn_peer_tasks(
-    link: &PeerLink,
-    events: &mpsc::Sender<LoopEvent>,
-) -> mpsc::Sender<Frame> {
+pub fn spawn_peer_tasks(link: &PeerLink, events: &mpsc::Sender<LoopEvent>) -> mpsc::Sender<Frame> {
     let node = link.remote();
 
     // Writer channel + task
@@ -59,9 +56,7 @@ pub fn spawn_peer_tasks(
                     }
                     Err(e) => {
                         debug!(peer = ?node, error = %e, "control stream closed");
-                        let _ = events
-                            .send(LoopEvent::PeerDisconnected { node })
-                            .await;
+                        let _ = events.send(LoopEvent::PeerDisconnected { node }).await;
                         break;
                     }
                 }
@@ -123,4 +118,3 @@ pub fn spawn_accept_task(mesh: MeshEndpoint, events: mpsc::Sender<LoopEvent>) {
         }
     });
 }
-

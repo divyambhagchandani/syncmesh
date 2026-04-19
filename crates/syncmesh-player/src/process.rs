@@ -129,10 +129,7 @@ pub async fn spawn(
     let ipc_path = options.ipc_path.clone().unwrap_or_else(generate_ipc_path);
 
     let mut cmd = Command::new(&options.mpv_binary);
-    cmd.arg(format!(
-        "--input-ipc-server={}",
-        ipc_path_to_arg(&ipc_path)
-    ));
+    cmd.arg(format!("--input-ipc-server={}", ipc_path_to_arg(&ipc_path)));
     cmd.arg("--no-terminal");
     if options.keep_alive {
         cmd.arg("--idle=yes").arg("--force-window=yes");

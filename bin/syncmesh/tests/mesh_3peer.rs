@@ -22,10 +22,8 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use syncmesh::addrs::{decode_addr, encode_addr, AddrRegistry};
-use syncmesh_core::{
-    ControlAction, ControlEvent, Frame, NodeId, PresenceEvent,
-};
+use syncmesh::addrs::{AddrRegistry, decode_addr, encode_addr};
+use syncmesh_core::{ControlAction, ControlEvent, Frame, NodeId, PresenceEvent};
 use syncmesh_net::{MeshConfig, MeshEndpoint, identity};
 use tokio::time::timeout;
 
@@ -62,7 +60,10 @@ async fn transitive_peer_list_dial_establishes_direct_a_c_link() -> Result<()> {
     let a_addr = a.addr();
     let a_clone = a.clone();
     let a_accept_b = tokio::spawn(async move {
-        a_clone.accept_next().await?.ok_or_else(|| anyhow::anyhow!("a closed"))
+        a_clone
+            .accept_next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("a closed"))
     });
     let b_to_a = timeout(Duration::from_secs(10), b.dial(a_addr.clone())).await??;
     let _a_from_b = timeout(Duration::from_secs(10), a_accept_b).await???;
@@ -71,7 +72,10 @@ async fn transitive_peer_list_dial_establishes_direct_a_c_link() -> Result<()> {
     let b_addr = b.addr();
     let b_clone = b.clone();
     let b_accept_c = tokio::spawn(async move {
-        b_clone.accept_next().await?.ok_or_else(|| anyhow::anyhow!("b closed"))
+        b_clone
+            .accept_next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("b closed"))
     });
     let c_to_b = timeout(Duration::from_secs(10), c.dial(b_addr)).await??;
     let b_from_c = timeout(Duration::from_secs(10), b_accept_c).await???;

@@ -77,7 +77,10 @@ mod tests {
 
     #[test]
     fn seek_converts_ms_to_seconds() {
-        let v = MpvCommand::Seek { media_pos_ms: 12_500 }.to_json(1);
+        let v = MpvCommand::Seek {
+            media_pos_ms: 12_500,
+        }
+        .to_json(1);
         assert_eq!(
             v,
             json!({"command": ["seek", 12.5, "absolute"], "request_id": 1})

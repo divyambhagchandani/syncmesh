@@ -47,8 +47,7 @@ where
     // One fallible conversion handles both the "too many bytes to count in
     // a u32" case and the "fits in a u32 but exceeds the protocol cap" case
     // — no `expect`/`unwrap` needed.
-    let len = u32::try_from(payload.len())
-        .map_err(|_| FrameSendError::TooLarge(payload.len()))?;
+    let len = u32::try_from(payload.len()).map_err(|_| FrameSendError::TooLarge(payload.len()))?;
     if len > MAX_FRAME_BYTES {
         return Err(FrameSendError::TooLarge(payload.len()));
     }
@@ -92,7 +91,9 @@ mod tests {
             origin: NodeId::from_bytes([1u8; 32]),
             origin_ts_ms: 12_345,
             seq: 7,
-            action: ControlAction::Pause { media_pos_ms: 1_000 },
+            action: ControlAction::Pause {
+                media_pos_ms: 1_000,
+            },
         })
     }
 

@@ -79,9 +79,7 @@ where
 #[tokio::test]
 async fn pause_play_seek_and_speed_round_trip_with_real_mpv() {
     let Some(mpv_bin) = find_mpv() else {
-        eprintln!(
-            "SKIPPED: mpv binary not found (set SYNCMESH_MPV_BIN or install mpv on PATH)"
-        );
+        eprintln!("SKIPPED: mpv binary not found (set SYNCMESH_MPV_BIN or install mpv on PATH)");
         return;
     };
 
@@ -144,7 +142,9 @@ async fn pause_play_seek_and_speed_round_trip_with_real_mpv() {
     // Seek to 3 seconds. mpv should emit a Seeking event followed by a
     // TimePos reflecting the seek.
     handle
-        .send(MpvCommand::Seek { media_pos_ms: 3_000 })
+        .send(MpvCommand::Seek {
+            media_pos_ms: 3_000,
+        })
         .await
         .expect("seek");
     wait_for(&mut events, Duration::from_secs(5), |e| {
@@ -188,7 +188,10 @@ async fn pause_play_seek_and_speed_round_trip_with_real_mpv() {
     }
 
     // Unpause and expect Pause(false).
-    handle.send(MpvCommand::Pause(false)).await.expect("unpause");
+    handle
+        .send(MpvCommand::Pause(false))
+        .await
+        .expect("unpause");
     wait_for(&mut events, Duration::from_secs(5), |e| {
         matches!(e, MpvEvent::Pause(false))
     })

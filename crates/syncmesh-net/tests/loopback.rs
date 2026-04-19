@@ -22,8 +22,12 @@ use tokio::time::timeout;
 /// Bind two endpoints and fully establish a `PeerLink` in both directions.
 ///
 /// Returns `(dialer_endpoint, acceptor_endpoint, dialer_link, acceptor_link)`.
-async fn connected_pair() -> Result<(MeshEndpoint, MeshEndpoint, syncmesh_net::PeerLink, syncmesh_net::PeerLink)>
-{
+async fn connected_pair() -> Result<(
+    MeshEndpoint,
+    MeshEndpoint,
+    syncmesh_net::PeerLink,
+    syncmesh_net::PeerLink,
+)> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -75,7 +79,9 @@ async fn control_frame_round_trips_over_stream() -> Result<()> {
         origin: dialer_link.remote(),
         origin_ts_ms: 1_234,
         seq: 1,
-        action: ControlAction::Pause { media_pos_ms: 5_000 },
+        action: ControlAction::Pause {
+            media_pos_ms: 5_000,
+        },
     });
 
     dialer_link.send_frame(&sent).await?;
@@ -174,7 +180,10 @@ async fn ticket_round_trip_and_dial() -> Result<()> {
     let dialer = MeshEndpoint::bind(dial_secret, MeshConfig::localhost()).await?;
 
     let ticket = acceptor.ticket();
-    assert!(ticket.starts_with("syncmesh1"), "unexpected ticket: {ticket}");
+    assert!(
+        ticket.starts_with("syncmesh1"),
+        "unexpected ticket: {ticket}"
+    );
     let parsed_addr = syncmesh_net::decode_ticket(&ticket)?;
 
     let acceptor_clone = acceptor.clone();
@@ -212,7 +221,9 @@ async fn rtt_estimator_receives_samples_from_transport() -> Result<()> {
             origin: dialer_link.remote(),
             origin_ts_ms: i,
             seq: i,
-            action: ControlAction::Seek { media_pos_ms: i * 1_000 },
+            action: ControlAction::Seek {
+                media_pos_ms: i * 1_000,
+            },
         });
         dialer_link.send_frame(&f).await?;
         let _ = timeout(Duration::from_secs(5), acceptor_link.recv_frame()).await??;
@@ -245,8 +256,7 @@ async fn clean_disconnect_is_observed_on_the_other_side() -> Result<()> {
 
     // Acceptor starts reading; dialer closes; acceptor should see a recv
     // error (Eof or transport-level close) rather than hanging forever.
-    let reader =
-        tokio::spawn(async move { acceptor_link.recv_frame().await });
+    let reader = tokio::spawn(async move { acceptor_link.recv_frame().await });
 
     // Let the reader park in its await.
     tokio::time::sleep(Duration::from_millis(50)).await;

@@ -13,15 +13,15 @@
 //! widgets onto the provided frame. It is deliberately pure (no I/O, no
 //! async) so tests can drive it against a `TestBackend`.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
-use ratatui::Frame;
 use syncmesh_core::{ReadyState, RoomSnapshot};
 
-use super::keybinds::Mode;
 use super::input::ChatInput;
+use super::keybinds::Mode;
 
 /// UI-local state not owned by `RoomSnapshot`: input mode, input buffer,
 /// ephemeral flash messages, chat scroll offset.
@@ -86,11 +86,9 @@ fn render_status_bar(frame: &mut Frame<'_>, area: Rect, snap: &RoomSnapshot) {
         .as_ref()
         .map_or("no media", |m| m.filename_lower.as_str());
     let pos = format_ms(snap.local.playback.media_pos_ms);
-    let dur = snap
-        .local
-        .media
-        .as_ref()
-        .map_or("--:--".to_string(), |m| format_secs(u64::from(m.duration_s)));
+    let dur = snap.local.media.as_ref().map_or("--:--".to_string(), |m| {
+        format_secs(u64::from(m.duration_s))
+    });
     let state = if snap.local.playback.paused {
         "paused"
     } else {
@@ -101,9 +99,7 @@ fn render_status_bar(frame: &mut Frame<'_>, area: Rect, snap: &RoomSnapshot) {
         ReadyState::AllReady => "all ready",
         ReadyState::Pending => "waiting",
     };
-    let text = format!(
-        "syncmesh · {file} · {pos} / {dur} · {state} · {peer_count} peers · {gate}"
-    );
+    let text = format!("syncmesh · {file} · {pos} / {dur} · {state} · {peer_count} peers · {gate}");
     let paragraph = Paragraph::new(text).style(Style::default().add_modifier(Modifier::BOLD));
     frame.render_widget(paragraph, area);
 }
@@ -175,10 +171,7 @@ fn render_chat(frame: &mut Frame<'_>, area: Rect, snap: &RoomSnapshot, ui: &UiSt
                     .map_or_else(|| format!("{:?}", m.origin), |p| p.nickname.clone())
             };
             Line::from(vec![
-                Span::styled(
-                    format!("{who:>10}: "),
-                    Style::default().fg(Color::Cyan),
-                ),
+                Span::styled(format!("{who:>10}: "), Style::default().fg(Color::Cyan)),
                 Span::raw(m.text.clone()),
             ])
         })
@@ -352,9 +345,7 @@ mod tests {
     fn render_to_buffer(snap: &RoomSnapshot, ui: &UiState) -> String {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| super::render(f, snap, ui))
-            .unwrap();
+        terminal.draw(|f| super::render(f, snap, ui)).unwrap();
         let buf = terminal.backend().buffer().clone();
         let mut out = String::new();
         for y in 0..buf.area.height {

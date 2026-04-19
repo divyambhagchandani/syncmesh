@@ -31,13 +31,9 @@ pub enum MpvError {
 pub enum MpvExit {
     /// mpv exited cleanly (quit command, user closed window, end of file with
     /// `--keep-open=no`).
-    Clean {
-        code: Option<i32>,
-    },
+    Clean { code: Option<i32> },
     /// mpv crashed or was killed.
-    Crashed {
-        code: Option<i32>,
-    },
+    Crashed { code: Option<i32> },
     /// The handle was dropped — we killed mpv on shutdown.
     Killed,
     /// We never managed to talk to mpv in the first place.

@@ -91,9 +91,8 @@ impl IpcClient {
         let pending: ReplyMap = Arc::new(Mutex::new(HashMap::new()));
 
         let pending_for_reader = pending.clone();
-        let reader_task = tokio::spawn(async move {
-            read_loop(reader_half, event_tx, pending_for_reader).await
-        });
+        let reader_task =
+            tokio::spawn(async move { read_loop(reader_half, event_tx, pending_for_reader).await });
         let writer_task = tokio::spawn(async move { write_loop(writer_half, writer_rx).await });
 
         let client = Self {
@@ -300,8 +299,7 @@ mod tests {
                 .and_then(|o| o.get("request_id"))
                 .and_then(serde_json::Value::as_u64);
             if let Some(id) = id {
-                let reply =
-                    serde_json::json!({"request_id": id, "error": "success", "data": null});
+                let reply = serde_json::json!({"request_id": id, "error": "success", "data": null});
                 let line = format!("{reply}\n");
                 let _ = w.write_all(line.as_bytes()).await;
                 let _ = w.flush().await;
@@ -323,8 +321,7 @@ mod tests {
                     .get("request_id")
                     .and_then(serde_json::Value::as_u64)
                     .expect("must have request_id");
-                let reply =
-                    serde_json::json!({"request_id": id, "error": "success", "data": null});
+                let reply = serde_json::json!({"request_id": id, "error": "success", "data": null});
                 let line_out = format!("{reply}\n");
                 let _ = w.write_all(line_out.as_bytes()).await;
                 let _ = w.flush().await;
@@ -356,7 +353,12 @@ mod tests {
         tokio::spawn(run_fake_mpv(server_side, vec![]));
         let (client, _events) = IpcClient::start(Box::new(client_side)).await.unwrap();
         client.send(&MpvCommand::Pause(true)).await.unwrap();
-        client.send(&MpvCommand::Seek { media_pos_ms: 5_000 }).await.unwrap();
+        client
+            .send(&MpvCommand::Seek {
+                media_pos_ms: 5_000,
+            })
+            .await
+            .unwrap();
         let _ = client.shutdown().await;
     }
 
@@ -370,7 +372,10 @@ mod tests {
             let mut lines = BufReader::new(r).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let id = v.get("request_id").and_then(serde_json::Value::as_u64).unwrap();
+                let id = v
+                    .get("request_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap();
                 let cmd = v.get("command").unwrap().as_array().unwrap();
                 let first = cmd[0].as_str().unwrap();
                 let reply = if first == "observe_property" {
@@ -431,7 +436,10 @@ mod tests {
             for _ in 0..OBSERVABLE_PROPERTIES.len() {
                 if let Ok(Some(line)) = lines.next_line().await {
                     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                    let id = v.get("request_id").and_then(serde_json::Value::as_u64).unwrap();
+                    let id = v
+                        .get("request_id")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap();
                     let reply = serde_json::json!({"request_id": id, "error": "success"});
                     let line_out = format!("{reply}\n");
                     let _ = w.write_all(line_out.as_bytes()).await;
@@ -471,11 +479,12 @@ mod tests {
             let _ = w.flush().await;
             while let Ok(Some(line)) = lines.next_line().await {
                 let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let id = v.get("request_id").and_then(serde_json::Value::as_u64).unwrap();
+                let id = v
+                    .get("request_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap();
                 let reply = serde_json::json!({"request_id": id, "error": "success"});
-                let _ = w
-                    .write_all(format!("{reply}\n").as_bytes())
-                    .await;
+                let _ = w.write_all(format!("{reply}\n").as_bytes()).await;
                 let _ = w.flush().await;
             }
         });

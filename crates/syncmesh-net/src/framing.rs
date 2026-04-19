@@ -44,11 +44,14 @@ where
     W: AsyncWriteExt + Unpin,
 {
     let payload = frame.encode();
-    if payload.len() > MAX_FRAME_BYTES as usize {
+    // One fallible conversion handles both the "too many bytes to count in
+    // a u32" case and the "fits in a u32 but exceeds the protocol cap" case
+    // — no `expect`/`unwrap` needed.
+    let len = u32::try_from(payload.len())
+        .map_err(|_| FrameSendError::TooLarge(payload.len()))?;
+    if len > MAX_FRAME_BYTES {
         return Err(FrameSendError::TooLarge(payload.len()));
     }
-    // `as u32` is safe because we just checked the bound above.
-    let len = u32::try_from(payload.len()).expect("checked above");
     w.write_all(&len.to_be_bytes()).await?;
     w.write_all(&payload).await?;
     Ok(())

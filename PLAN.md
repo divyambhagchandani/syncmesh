@@ -13,12 +13,12 @@ Stack: Rust 2024 + tokio + iroh + mpvipc. Single static binary per OS, no runtim
 | 0 | Scaffolding (workspace, CI, toolchain, tracing) | ✅ done |
 | 1 | mpv integration (`syncmesh-player`) | ✅ done |
 | 2 | Two-peer mesh over iroh (`syncmesh-net`) | ✅ done |
-| 3 | Sync state machine (`syncmesh-core`) | 🟡 meets overall spec; `state.rs` has known gaps |
-| 4 | Full-mesh + end-to-end wiring in the binary | ⬜ next |
+| 3 | Sync state machine (`syncmesh-core`) | ✅ done |
+| 4 | Full-mesh + end-to-end wiring in the binary | 🟡 local mpv control + media-id publication shipped; N>2 dialing still open |
 | 5 | TUI + chat (`bin/syncmesh`) | ⬜ todo |
 | 6 | Polish, packaging, release | ⬜ todo |
 
-Workspace state: **142 tests passing**, clippy-clean with `pedantic` + `-D warnings`, CI matrix green on Linux/macOS/Windows. `syncmesh-core` line coverage: **91.94%** (measured via `cargo llvm-cov`).
+Workspace state: **170 tests passing** (96 core + 5 proptest + 4 simulator + 13 net + 6 loopback + 13 bin — plus 33 `syncmesh-player` tests that require a local mpv), clippy-clean with `pedantic` + `-D warnings`, CI matrix green on Linux/macOS/Windows. `syncmesh-core` line coverage: **97.77%** (measured via `cargo llvm-cov`).
 
 Pinned decisions: see [Decision index](#decision-index) at the bottom — the 22 locked-in choices from the original spec. Nothing there has changed.
 
@@ -99,61 +99,61 @@ Files (all pure logic, zero I/O, zero iroh dependency):
 - [`src/state.rs`](crates/syncmesh-core/src/state.rs) — the central `apply(Input) -> Vec<Output>` pure function. Owns the room state machine, chat ring buffer (200 msgs), per-peer heartbeat table, dedup by `(origin, seq)`, late-joiner auto-seek-then-Ready-gate flow.
 - [`src/time.rs`](crates/syncmesh-core/src/time.rs) — `Clock` trait with `SystemClock` + `MockClock` for deterministic simulator time.
 
-Tests (90 in this crate):
-- 81 unit tests across all modules.
+Tests (105 in this crate):
+- 96 unit tests across all modules.
 - 5 proptest cases ([`tests/conflict_proptest.rs`](crates/syncmesh-core/tests/conflict_proptest.rs)) — randomized simultaneous-event scenarios.
 - 4 multi-peer simulator tests ([`tests/mesh_simulator.rs`](crates/syncmesh-core/tests/mesh_simulator.rs)) — in-process 3-peer mesh with injected propagation delay.
 
-**Coverage** (measured 2026-04-19 via `cargo llvm-cov`, 91.94% overall — passes the plan's >90% bar):
+**Coverage** (measured 2026-04-19 via `cargo llvm-cov`, **97.77%** overall):
 
 | File | Lines |
 |------|-------|
 | `conflict.rs`, `media.rs`, `time.rs` | 100% |
-| `drift.rs`, `protocol.rs` | ~100% |
+| `drift.rs` | 100% |
+| `protocol.rs` | 100% |
 | `ready.rs` | 97.25% |
 | `rtt.rs` | 95.83% |
 | `node_id.rs` | 93.62% |
-| **`state.rs`** | **87.15%** (119 uncovered lines — below bar) |
+| **`state.rs`** | **97.31%** |
 
-**Exit criterion status:** the simulator runs 3-peer scenarios with configurable link delay and asserts end-to-end sync properties; the state machine is testable without network or mpv. Overall coverage meets spec, but `state.rs` individually is below 90%.
+**Exit criterion met:** the simulator runs 3-peer scenarios with configurable link delay and asserts end-to-end sync properties; the state machine is testable without network or mpv; every `state.rs` file is above the >90% bar.
 
-**Known gaps in `state.rs`** (deferred to the follow-up task below):
-
-- Inbound `ControlAction::{Play, Seek, SetSpeed, MediaChanged}` handling (lines 459–497). Only `Pause` is exercised by the simulator.
-- Every `PresenceEvent` variant on the inbound path (lines 550–592): `Join`, `Leave`, `Ready`, `Rename`, `PeerList`.
-- Local `on_local_control` for non-Pause actions (lines 614–622).
-- Heartbeat media-mismatch branch when local has no media set (lines 537–543).
-
-These are not defensive branches — they're protocol paths Phase 4 will exercise every session. Closing them before Phase 4 avoids inheriting latent bugs.
-
-**Follow-up task (before or alongside Phase 4):** add ~6–8 focused unit tests covering the gaps above. Estimated 30–45 minutes; target >90% on `state.rs` in isolation.
+The previously-flagged gaps in `state.rs` (inbound `ControlAction::{Play, Seek, MediaChanged}`, every `PresenceEvent` variant on the inbound path, local non-Pause control, heartbeat-mismatch-with-no-local-media) are now each covered by a focused unit test in [`state.rs`](crates/syncmesh-core/src/state.rs).
 
 ---
 
 ## Part B — What's left
 
-### ⬜ Phase 4 — Full mesh + end-to-end wiring (~1 week)
+### 🟡 Phase 4 — Full mesh + end-to-end wiring
 
-The three library crates all exist and are tested in isolation. Phase 4 wires them into a running process that actually watches a video with a friend.
+The three library crates are wired together in [`bin/syncmesh`](bin/syncmesh/src/). The binary compiles clippy-clean with `pedantic + -D warnings`, its `--help` round-trips, and the event-loop skeleton dispatches every `RoomState::Output` variant.
 
-**Work to do, in the `bin/syncmesh` crate:**
+**Shipped:**
 
-1. **Task topology (per §3.2 of the original plan).** Spawn these as tokio tasks, all funneling into a single `event_loop_task` that owns the authoritative `RoomState`:
-   - `mpv_event_task` — reads `MpvEvent`s from `syncmesh-player`, forwards to the event loop.
-   - `mpv_cmd_task` — consumes `MpvCommand`s from the event loop, dispatches via `syncmesh-player`.
-   - `mesh_acceptor_task` — `MeshEndpoint::accept_next` loop, spawns a reader/writer task pair per new `PeerLink`.
-   - `per_peer_reader_task` / `per_peer_writer_task` — one pair per peer; decode/encode `Frame`s on each side.
-   - `heartbeat_task` — 1 Hz `StateHeartbeat` fan-out via `PeerLink::send_datagram`.
-   - `drift_task` — 1 Hz `check_drift` per known peer, emits `SetSpeed`/`Seek` commands.
-   - `event_loop_task` — single `select!` over all inputs.
+- [`cli.rs`](bin/syncmesh/src/cli.rs) — `clap`-driven `create` / `join <ticket>` subcommands plus global `--nickname`, `--no-mpv`, `--mpv-binary`.
+- [`config.rs`](bin/syncmesh/src/config.rs) — `ProjectDirs`-based config dir resolution; holds the persistent `identity.key`.
+- [`peer_task.rs`](bin/syncmesh/src/peer_task.rs) — per-peer control reader + datagram reader + writer-task trio, plus the `accept_next` loop.
+- [`app.rs`](bin/syncmesh/src/app.rs) — single `tokio::select!` owning the `RoomState`. Funnels `MpvEvent`s, inbound frames, peer-lifecycle events, and a 1 Hz `Tick` through `RoomState::apply`, dispatching `Output::Broadcast` / `SendTo` / `Mpv(..)` / `Notify` appropriately. Heartbeats go out as QUIC datagrams; control frames via per-peer writer mpsc.
+- [`echo.rs`](bin/syncmesh/src/echo.rs) — per-property echo guard (pause/seek/speed) armed inside `send_mpv` before each outbound `MpvCommand`. First matching mpv edge within a 1.5 s window is suppressed; edges outside the window or that don't match become genuine `LocalControl` broadcasts. Seek matching uses a ±1 s keyframe-snap tolerance; pause and speed are exact.
+- [`media.rs`](bin/syncmesh/src/media.rs) — coalesces the three independent mpv property streams (`filename`, `duration`, `file-size`) into a single `MediaId` and emits `Input::LocalMediaChanged` on each distinct file. A fresh `filename` resets the duration + size so stale values from the previous file never leak into a new `MediaId`.
+- [`main.rs`](bin/syncmesh/src/main.rs) — `tracing-subscriber` init, identity load, `MeshEndpoint::bind`, optional mpv spawn, Ctrl-C handler, accept task spawn, ticket print (create) / dial (join).
 
-2. **N>2 mesh bootstrap.** On join, the first peer we dial sends us a `PresenceEvent::PeerList`; we then dial each additional peer in parallel. Implement peer-churn: handle `Leave`, reconnect-with-backoff on transient errors.
+**Local mpv edge → broadcast wiring:**
 
-3. **Graceful shutdown.** Wire `MeshEndpoint::close().await` and `syncmesh-player` child kill into a single `Ctrl-C` handler.
+- `MpvEvent::Pause(p)` → `EchoGuard::consume_pause`; on miss, broadcast `LocalControl::{Pause,Play}`.
+- `MpvEvent::Seeking` arms `seek_in_progress`; `MpvEvent::PlaybackRestart` flips it to `seek_just_completed`; the next `MpvEvent::TimePos(s)` is evaluated as a seek target (suppress via `EchoGuard::consume_seek`, or broadcast `LocalControl::Seek`). Any other `TimePos` is passive playback progress → `MpvStateUpdate`, no broadcast.
+- `MpvEvent::Speed(s)` → `EchoGuard::consume_speed`; on miss, broadcast `LocalControl::SetSpeed`.
+- `MpvEvent::{Filename, Duration, FileSize}` → `MediaCollector`; when all three are present and differ from the last emission, emit `LocalMediaChanged`.
 
-**Exit criterion:** three peers on three machines (mixed OS) watch the same local file. Pause/play/seek propagate in <50 ms on LAN. Drift stays under 100 ms in steady state.
+Drift-correction `SetSpeed` / `Seek` commands also pass through `send_mpv` and therefore arm the echo guard, so the mpv property-change events they generate never rebroadcast.
 
-**Dependencies ready to pull in:** `tokio::sync::{mpsc, broadcast}`, `directories` (for config path), `clap` (CLI args).
+**Remaining gap:**
+
+1. **N>2 dialing is one-hop only.** On `join`, we dial exactly the host from the ticket. We don't re-dial the rest of the mesh from a subsequent `PresenceEvent::PeerList`, because `PeerList` currently carries only `(NodeId, String)` pairs and we'd need each peer's `EndpointAddr` to dial. Plan: either (a) extend `PeerList` to carry `EndpointAddr`s (postcard-opaque bytes would keep the core crate iroh-free), or (b) relay control frames through the host for N>2 rather than full-meshing — revisit once we have real 3-peer dogfooding data.
+
+**Exit criterion (unchanged):** three peers on three machines (mixed OS) watch the same local file; pause/play/seek propagate in <50 ms on LAN; drift stays under 100 ms in steady state. The 2-peer path should now satisfy this end-to-end; full-mesh N>2 remains blocked on gap 1 above.
+
+**Dependencies pulled in:** `clap` (derive), `directories` (config paths), `tracing-subscriber`, `anyhow`, `iroh` (for `EndpointAddr` on the dial path).
 
 ---
 

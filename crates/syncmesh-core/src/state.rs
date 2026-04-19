@@ -17,6 +17,7 @@ use crate::protocol::{
 };
 use crate::ready::{ReadyGate, ReadyState};
 use crate::rtt::RttEstimator;
+use crate::snapshot::{LocalSnapshot, PeerSnapshot, RoomSnapshot};
 
 pub const SPEED_NORMAL_CENTI: u16 = 100;
 pub const SPEED_DOWN_CENTI: u16 = 95;
@@ -252,6 +253,57 @@ impl RoomState {
 
     pub fn ready_gate(&self) -> &ReadyGate {
         &self.ready_gate
+    }
+
+    /// Project the authoritative state into an immutable [`RoomSnapshot`]
+    /// suitable for UI rendering. Cheap clone of every field we expose —
+    /// chat ring included, so the UI can render scrollback without reaching
+    /// back into the live state.
+    pub fn snapshot(&self) -> RoomSnapshot {
+        let local = LocalSnapshot {
+            node: self.local,
+            nickname: self.local_nickname.clone(),
+            ready: self.local_ready,
+            playback: self.local_playback,
+            media: self.local_media.clone(),
+        };
+
+        let peers = self
+            .peers
+            .iter()
+            .map(|(node, peer)| {
+                let ready = self.ready_gate.get(node).unwrap_or(false);
+                let rtt_ms = peer.rtt.estimate_ms();
+                let drift_ms = peer.last_heartbeat.as_ref().map(|hb| {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let local = self.local_playback.media_pos_ms as i64;
+                    #[allow(clippy::cast_possible_wrap)]
+                    let remote = hb.media_pos_ms as i64;
+                    local - remote
+                });
+                let media_match = peer.last_heartbeat.as_ref().and_then(|hb| {
+                    let our_media = self.local_media.as_ref()?;
+                    let their_media = hb.media_id.as_ref()?;
+                    Some(match_media(our_media, their_media))
+                });
+                PeerSnapshot {
+                    node: *node,
+                    nickname: peer.nickname.clone(),
+                    ready,
+                    rtt_ms,
+                    drift_ms,
+                    media_match,
+                }
+            })
+            .collect();
+
+        RoomSnapshot {
+            local,
+            peers,
+            chat: self.chat_ring.iter().cloned().collect(),
+            ready_state: self.ready_gate.state(),
+            override_enabled: self.ready_gate.is_override_enabled(),
+        }
     }
 
     /// Drive the state machine with one input. Pure: no I/O, no side effects.
@@ -574,9 +626,10 @@ impl RoomState {
             }
             PresenceEvent::PeerList { peers } => {
                 // A peer gave us their roster. Record any unknown nodes as
-                // peers; the net layer will dial them.
+                // peers; the net layer will dial them using the opaque
+                // `addr_bytes` third field (which this crate does not inspect).
                 let _ = from;
-                for (node, nickname) in peers {
+                for (node, nickname, _addr_bytes) in peers {
                     if node == self.local {
                         continue;
                     }
@@ -588,6 +641,14 @@ impl RoomState {
                     }
                     self.ready_gate.set(node, false);
                 }
+                Vec::new()
+            }
+            PresenceEvent::AddrAnnounce { .. } => {
+                // Address bookkeeping is entirely a transport-layer concern;
+                // the core state machine ignores `AddrAnnounce`. The bin
+                // layer snoops these before calling `apply` and updates its
+                // address registry there.
+                let _ = from;
                 Vec::new()
             }
         }
@@ -683,13 +744,17 @@ impl RoomState {
             return Vec::new();
         }
         // Send the new peer the current roster so they can dial everyone.
-        let peers_list: Vec<(NodeId, String)> =
-            std::iter::once((self.local, self.local_nickname.clone()))
+        // `addr_bytes` is left empty here; the bin layer intercepts
+        // `Output::SendTo` with a `PeerList` and rewrites the third tuple
+        // field from its address registry. This keeps the core crate free of
+        // any transport-layer address type.
+        let peers_list: Vec<(NodeId, String, Vec<u8>)> =
+            std::iter::once((self.local, self.local_nickname.clone(), Vec::new()))
                 .chain(
                     self.peers
                         .iter()
                         .filter(|(n, _)| **n != node)
-                        .map(|(n, p)| (*n, p.nickname.clone())),
+                        .map(|(n, p)| (*n, p.nickname.clone(), Vec::new())),
                 )
                 .collect();
         let mut outs = vec![
@@ -1285,5 +1350,491 @@ mod tests {
 
         r.apply(Input::SetOverride { enabled: true });
         assert_eq!(r.ready_state(), ReadyState::AllReady);
+    }
+
+    // --- Inbound control: Play / Seek / MediaChanged (Pause + SetSpeed already covered) ---
+
+    #[test]
+    fn inbound_play_seeks_and_unpauses_and_updates_local_state() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+        });
+        // Start paused so we can observe the transition to playing.
+        r.apply(Input::MpvStateUpdate {
+            media_pos_ms: 0,
+            paused: true,
+            speed_centi: SPEED_NORMAL_CENTI,
+        });
+        let ev = ControlEvent {
+            origin: n(2),
+            origin_ts_ms: 1_000,
+            seq: 1,
+            action: ControlAction::Play {
+                media_pos_ms: 7_500,
+            },
+        };
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Control(ev),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Output::Mpv(MpvCommand::Seek { media_pos_ms: 7_500 })))
+        );
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Output::Mpv(MpvCommand::Pause(false))))
+        );
+        assert!(!r.local_playback().paused);
+        assert_eq!(r.local_playback().media_pos_ms, 7_500);
+    }
+
+    #[test]
+    fn inbound_seek_updates_position_without_changing_pause() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+        });
+        r.apply(Input::MpvStateUpdate {
+            media_pos_ms: 0,
+            paused: false,
+            speed_centi: SPEED_NORMAL_CENTI,
+        });
+        let ev = ControlEvent {
+            origin: n(2),
+            origin_ts_ms: 1_000,
+            seq: 1,
+            action: ControlAction::Seek {
+                media_pos_ms: 42_000,
+            },
+        };
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Control(ev),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Output::Mpv(MpvCommand::Seek { media_pos_ms: 42_000 })))
+        );
+        // No Pause command emitted for a bare Seek.
+        assert!(
+            !outs
+                .iter()
+                .any(|o| matches!(o, Output::Mpv(MpvCommand::Pause(_))))
+        );
+        assert_eq!(r.local_playback().media_pos_ms, 42_000);
+        assert!(!r.local_playback().paused);
+    }
+
+    #[test]
+    fn inbound_media_changed_with_matching_local_emits_no_notice() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+        });
+        let media = MediaId {
+            filename_lower: "a.mkv".into(),
+            size_bytes: 100,
+            duration_s: 10,
+        };
+        r.apply(Input::LocalMediaChanged {
+            media: media.clone(),
+            now_ms: 0,
+        });
+        let ev = ControlEvent {
+            origin: n(2),
+            origin_ts_ms: 2_000,
+            seq: 1,
+            action: ControlAction::MediaChanged { id: media },
+        };
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Control(ev),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(
+            !outs
+                .iter()
+                .any(|o| matches!(o, Output::Notify(Notice::MediaMismatch { .. })))
+        );
+    }
+
+    #[test]
+    fn inbound_media_changed_with_different_local_emits_mismatch() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+        });
+        r.apply(Input::LocalMediaChanged {
+            media: MediaId {
+                filename_lower: "a.mkv".into(),
+                size_bytes: 100,
+                duration_s: 10,
+            },
+            now_ms: 0,
+        });
+        let ev = ControlEvent {
+            origin: n(2),
+            origin_ts_ms: 2_000,
+            seq: 1,
+            action: ControlAction::MediaChanged {
+                id: MediaId {
+                    filename_lower: "b.mkv".into(),
+                    size_bytes: 200,
+                    duration_s: 10,
+                },
+            },
+        };
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Control(ev),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Notify(Notice::MediaMismatch {
+                severity: MatchResult::Different,
+                our_media: Some(_),
+                ..
+            })
+        )));
+    }
+
+    #[test]
+    fn inbound_media_changed_without_local_media_emits_mismatch_with_none() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+        });
+        let ev = ControlEvent {
+            origin: n(2),
+            origin_ts_ms: 2_000,
+            seq: 1,
+            action: ControlAction::MediaChanged {
+                id: MediaId {
+                    filename_lower: "b.mkv".into(),
+                    size_bytes: 200,
+                    duration_s: 10,
+                },
+            },
+        };
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Control(ev),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Notify(Notice::MediaMismatch {
+                severity: MatchResult::Different,
+                our_media: None,
+                ..
+            })
+        )));
+    }
+
+    // --- Heartbeat media mismatch: local has no media ---
+
+    #[test]
+    fn heartbeat_with_peer_media_and_no_local_media_emits_mismatch() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+        });
+        let mut h = hb(n(2), 1_000, 0, true, false);
+        h.media_id = Some(MediaId {
+            filename_lower: "only-they-have-it.mkv".into(),
+            size_bytes: 500,
+            duration_s: 60,
+        });
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Heartbeat(h),
+            received_at_ms: 1_000,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Notify(Notice::MediaMismatch {
+                severity: MatchResult::Different,
+                our_media: None,
+                ..
+            })
+        )));
+    }
+
+    // --- Inbound presence: Join / Leave / Rename / PeerList ---
+
+    #[test]
+    fn inbound_presence_join_adds_peer_and_registers_in_gate() {
+        let mut r = new_room();
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Join {
+                node: n(3),
+                nickname: "carol".into(),
+            }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.is_empty());
+        assert_eq!(r.peer(&n(3)).unwrap().nickname, "carol");
+        // Gate should now include the new peer as not-ready.
+        let _ = r.apply(Input::LocalReady {
+            ready: true,
+            now_ms: 1,
+        });
+        assert_eq!(r.ready_state(), ReadyState::Pending);
+    }
+
+    #[test]
+    fn inbound_presence_leave_removes_peer_and_clears_gate() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "alice".into(),
+        });
+        // With local ready + peer not ready → Pending.
+        let _ = r.apply(Input::LocalReady {
+            ready: true,
+            now_ms: 1,
+        });
+        assert_eq!(r.ready_state(), ReadyState::Pending);
+
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Leave { node: n(2) }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.is_empty());
+        assert_eq!(r.peer_count(), 0);
+        // Gate cleared → only local (ready) remains → AllReady.
+        assert_eq!(r.ready_state(), ReadyState::AllReady);
+    }
+
+    #[test]
+    fn inbound_presence_rename_updates_nickname() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "alice".into(),
+        });
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Rename {
+                node: n(2),
+                nickname: "alice-the-second".into(),
+            }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.is_empty());
+        assert_eq!(r.peer(&n(2)).unwrap().nickname, "alice-the-second");
+    }
+
+    #[test]
+    fn inbound_presence_rename_on_unknown_node_is_noop() {
+        let mut r = new_room();
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Rename {
+                node: n(9),
+                nickname: "ghost".into(),
+            }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.is_empty());
+        assert_eq!(r.peer_count(), 0);
+    }
+
+    #[test]
+    fn inbound_peer_list_registers_all_nodes_and_skips_self() {
+        let mut r = new_room();
+        let outs = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::PeerList {
+                peers: vec![
+                    (n(1), "me-echoed-back".into(), vec![]), // skipped: this is us
+                    (n(2), "alice".into(), vec![]),
+                    (n(3), "bob".into(), vec![]),
+                ],
+            }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert!(outs.is_empty());
+        assert_eq!(r.peer_count(), 2);
+        assert_eq!(r.peer(&n(2)).unwrap().nickname, "alice");
+        assert_eq!(r.peer(&n(3)).unwrap().nickname, "bob");
+        assert!(r.peer(&n(1)).is_none());
+    }
+
+    #[test]
+    fn inbound_peer_list_updates_existing_nickname() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "old-name".into(),
+        });
+        let _ = r.apply(Input::FrameReceived {
+            from: n(3),
+            frame: Frame::Presence(PresenceEvent::PeerList {
+                peers: vec![(n(2), "new-name".into(), vec![])],
+            }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert_eq!(r.peer(&n(2)).unwrap().nickname, "new-name");
+    }
+
+    // --- Local non-Pause control paths ---
+
+    #[test]
+    fn local_seek_broadcasts_and_updates_position() {
+        let mut r = new_room();
+        r.apply(Input::MpvStateUpdate {
+            media_pos_ms: 1_000,
+            paused: false,
+            speed_centi: SPEED_NORMAL_CENTI,
+        });
+        let outs = r.apply(Input::LocalControl {
+            action: ControlAction::Seek {
+                media_pos_ms: 12_345,
+            },
+            now_ms: 5_000,
+        });
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Broadcast(Frame::Control(ControlEvent {
+                action: ControlAction::Seek {
+                    media_pos_ms: 12_345
+                },
+                ..
+            }))
+        )));
+        assert_eq!(r.local_playback().media_pos_ms, 12_345);
+        // Pause state unchanged by Seek.
+        assert!(!r.local_playback().paused);
+    }
+
+    #[test]
+    fn local_set_speed_broadcasts_and_updates_speed() {
+        let mut r = new_room();
+        let outs = r.apply(Input::LocalControl {
+            action: ControlAction::SetSpeed { speed_centi: 125 },
+            now_ms: 0,
+        });
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Broadcast(Frame::Control(ControlEvent {
+                action: ControlAction::SetSpeed { speed_centi: 125 },
+                ..
+            }))
+        )));
+        assert_eq!(r.local_playback().speed_centi, 125);
+    }
+
+    #[test]
+    fn local_media_changed_via_control_action_sets_local_media() {
+        let mut r = new_room();
+        let media = MediaId {
+            filename_lower: "x.mkv".into(),
+            size_bytes: 7,
+            duration_s: 1,
+        };
+        let outs = r.apply(Input::LocalControl {
+            action: ControlAction::MediaChanged { id: media.clone() },
+            now_ms: 0,
+        });
+        assert!(outs.iter().any(|o| matches!(
+            o,
+            Output::Broadcast(Frame::Control(ControlEvent {
+                action: ControlAction::MediaChanged { .. },
+                ..
+            }))
+        )));
+        assert_eq!(r.local_media(), Some(&media));
+    }
+
+    // --- Snapshot projection ---
+
+    #[test]
+    fn snapshot_reflects_local_fields() {
+        let r = new_room();
+        let s = r.snapshot();
+        assert_eq!(s.local.node, n(1));
+        assert_eq!(s.local.nickname, "me");
+        assert!(!s.local.ready);
+        assert_eq!(s.local.playback, PlaybackState::default());
+        assert!(s.local.media.is_none());
+        assert!(s.peers.is_empty());
+        assert!(s.chat.is_empty());
+        assert_eq!(s.ready_state, ReadyState::Pending);
+        assert!(!s.override_enabled);
+    }
+
+    #[test]
+    fn snapshot_includes_peers_with_nicknames_and_ready_flags() {
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "alice".into(),
+        });
+        let _ = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Ready {
+                node: n(2),
+                ready: true,
+            }),
+            received_at_ms: 1,
+            rtt_sample_ms: None,
+        });
+        let s = r.snapshot();
+        assert_eq!(s.peers.len(), 1);
+        assert_eq!(s.peers[0].node, n(2));
+        assert_eq!(s.peers[0].nickname, "alice");
+        assert!(s.peers[0].ready);
+    }
+
+    #[test]
+    fn snapshot_chat_captures_ring_contents() {
+        let mut r = new_room();
+        let _ = r.apply(Input::LocalChat {
+            text: "hello".into(),
+            now_ms: 10,
+        });
+        let _ = r.apply(Input::LocalChat {
+            text: "world".into(),
+            now_ms: 20,
+        });
+        let s = r.snapshot();
+        assert_eq!(s.chat.len(), 2);
+        assert_eq!(s.chat[0].text, "hello");
+        assert_eq!(s.chat[1].text, "world");
+    }
+
+    #[test]
+    fn snapshot_override_flag_tracked() {
+        let mut r = new_room();
+        let _ = r.apply(Input::SetOverride { enabled: true });
+        assert!(r.snapshot().override_enabled);
+        let _ = r.apply(Input::SetOverride { enabled: false });
+        assert!(!r.snapshot().override_enabled);
     }
 }

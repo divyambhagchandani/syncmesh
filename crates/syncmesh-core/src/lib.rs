@@ -13,6 +13,7 @@ pub mod node_id;
 pub mod protocol;
 pub mod ready;
 pub mod rtt;
+pub mod snapshot;
 pub mod state;
 pub mod time;
 
@@ -26,6 +27,7 @@ pub use protocol::{
 };
 pub use ready::{ReadyGate, ReadyState};
 pub use rtt::RttEstimator;
+pub use snapshot::{LocalSnapshot, PeerSnapshot, RoomSnapshot};
 pub use state::{
     Input, MpvCommand, Notice, Output, PeerState, PlaybackState, RoomState, SPEED_DOWN_CENTI,
     SPEED_NORMAL_CENTI, SPEED_UP_CENTI,

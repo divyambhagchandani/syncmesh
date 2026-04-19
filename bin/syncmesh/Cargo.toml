@@ -10,6 +10,10 @@ description = "P2P mesh-based Syncplay alternative for mpv."
 [lints]
 workspace = true
 
+[lib]
+name = "syncmesh"
+path = "src/lib.rs"
+
 [[bin]]
 name = "syncmesh"
 path = "src/main.rs"
@@ -20,3 +24,17 @@ syncmesh-net = { path = "../../crates/syncmesh-net" }
 syncmesh-player = { path = "../../crates/syncmesh-player" }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4", features = ["derive"] }
+directories = "5"
+anyhow = "1"
+iroh = { version = "0.98", default-features = false, features = ["tls-ring"] }
+postcard = { workspace = true }
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+arboard = { version = "3", optional = true }
+futures = "0.3"
+
+[features]
+default = ["clipboard"]
+clipboard = ["dep:arboard"]

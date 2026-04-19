@@ -104,9 +104,20 @@ pub enum PresenceEvent {
         nickname: String,
     },
     /// Sent by an existing peer to a freshly joined peer so it can dial the
-    /// rest of the mesh.
+    /// rest of the mesh. The third tuple element is an opaque,
+    /// transport-layer-encoded `EndpointAddr` for that peer — the core crate
+    /// treats it as opaque bytes to preserve the crate split (core is
+    /// iroh-free). Empty bytes are legal and mean "address not yet known";
+    /// the receiver drops that entry for dialing purposes.
     PeerList {
-        peers: Vec<(NodeId, String)>,
+        peers: Vec<(NodeId, String, Vec<u8>)>,
+    },
+    /// Broadcast by a peer once on connect so every other peer learns its
+    /// current `EndpointAddr`. Opaque bytes per the same reasoning as
+    /// `PeerList`.
+    AddrAnnounce {
+        node: NodeId,
+        addr_bytes: Vec<u8>,
     },
 }
 
@@ -245,9 +256,19 @@ mod tests {
             },
             PresenceEvent::PeerList {
                 peers: vec![
-                    (sample_node(), "alice".into()),
-                    (NodeId::from_bytes([9u8; 32]), "carol".into()),
+                    (sample_node(), "alice".into(), vec![]),
+                    (
+                        NodeId::from_bytes([9u8; 32]),
+                        "carol".into(),
+                        // Non-trivial opaque bytes: the core crate never
+                        // inspects these, but we assert they round-trip.
+                        (0u8..32).collect::<Vec<_>>(),
+                    ),
                 ],
+            },
+            PresenceEvent::AddrAnnounce {
+                node: sample_node(),
+                addr_bytes: (0u8..48).collect::<Vec<_>>(),
             },
         ] {
             assert_roundtrip(&Frame::Presence(p));

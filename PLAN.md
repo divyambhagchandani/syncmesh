@@ -14,11 +14,11 @@ Stack: Rust 2024 + tokio + iroh + mpvipc. Single static binary per OS, no runtim
 | 1 | mpv integration (`syncmesh-player`) | ✅ done |
 | 2 | Two-peer mesh over iroh (`syncmesh-net`) | ✅ done |
 | 3 | Sync state machine (`syncmesh-core`) | ✅ done |
-| 4 | Full-mesh + end-to-end wiring in the binary | 🟡 local mpv control + media-id publication shipped; N>2 dialing still open |
-| 5 | TUI + chat (`bin/syncmesh`) | ⬜ todo |
-| 6 | Polish, packaging, release | ⬜ todo |
+| 4 | Full-mesh + end-to-end wiring in the binary | ✅ done |
+| 5 | TUI + chat (`bin/syncmesh`) | ✅ done |
+| 6 | Polish, packaging, release | ⬜ next |
 
-Workspace state: **170 tests passing** (96 core + 5 proptest + 4 simulator + 13 net + 6 loopback + 13 bin — plus 33 `syncmesh-player` tests that require a local mpv), clippy-clean with `pedantic` + `-D warnings`, CI matrix green on Linux/macOS/Windows. `syncmesh-core` line coverage: **97.77%** (measured via `cargo llvm-cov`).
+Workspace state: **210 tests passing** (100 core + 5 proptest + 4 simulator + 13 net + 6 loopback + 48 bin + 1 mesh_3peer — plus 33 `syncmesh-player` tests that require a local mpv), clippy-clean with `pedantic` + `-D warnings` (`--all-features`), CI matrix green on Linux/macOS/Windows. `syncmesh-core` line coverage: **97.77%** (measured via `cargo llvm-cov`).
 
 Pinned decisions: see [Decision index](#decision-index) at the bottom — the 22 locked-in choices from the original spec. Nothing there has changed.
 

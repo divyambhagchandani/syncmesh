@@ -32,3 +32,27 @@ jobs:
         run: cargo test --workspace --all-targets
       - name: doc-test
         run: cargo test --workspace --doc
+      # Build the release binary for this OS and confirm it actually starts.
+      # Catches the "we shipped a binary that doesn't even run" class of
+      # regression — e.g. a missing system lib, a panic on startup, a
+      # version-string regression — that pure-Rust unit/integration tests
+      # would never see because they link to the same crate, not the
+      # standalone exe.
+      - name: build release binary
+        run: cargo build --release --bin syncmesh --locked
+      - name: smoke test built binary
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=target/release/syncmesh.exe
+          else
+            BIN=target/release/syncmesh
+          fi
+          # --version and --help must each exit 0 and produce non-empty
+          # output. Both are pure-CLI paths — no network, no mpv, no UI.
+          out=$("$BIN" --version)
+          test -n "$out" || { echo "syncmesh --version produced no output"; exit 1; }
+          echo "$out"
+          out=$("$BIN" --help)
+          test -n "$out" || { echo "syncmesh --help produced no output"; exit 1; }

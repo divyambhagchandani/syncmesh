@@ -69,9 +69,60 @@ use crate::ui::UiEvent;
 /// (consume unconditionally — the post-`PlaybackRestart` `TimePos` is
 /// guaranteed to be ours and re-broadcasting it would cause a ping-pong).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MpvDispatchOrigin {
+pub enum MpvDispatchOrigin {
     Local,
     Remote,
+}
+
+/// Arm the echo guard before dispatching `cmd` to mpv, tagged with `origin`.
+///
+/// This is the single source of truth for "what does dispatching an mpv
+/// command do to the echo guard"; both [`App::send_mpv`] and the 2-peer
+/// regression test in `tests/two_peer_seek_loop.rs` go through it so the
+/// test cannot drift away from production behaviour.
+pub fn arm_echo_for_dispatch(
+    echo: &mut EchoGuard,
+    cmd: CoreMpvCommand,
+    origin: MpvDispatchOrigin,
+    now_ms: u64,
+) {
+    match cmd {
+        CoreMpvCommand::Pause(p) => echo.record_pause(p, now_ms),
+        CoreMpvCommand::Seek { media_pos_ms } => match origin {
+            MpvDispatchOrigin::Local => echo.record_seek(media_pos_ms, now_ms),
+            MpvDispatchOrigin::Remote => echo.record_seek_remote(media_pos_ms, now_ms),
+        },
+        CoreMpvCommand::SetSpeed { speed_centi } => echo.record_speed(speed_centi, now_ms),
+    }
+}
+
+/// Classify a post-`PlaybackRestart` `TimePos` from mpv as either an echo of a
+/// previously-dispatched `Seek` command or a fresh user seek that needs to be
+/// broadcast to the mesh.
+///
+/// Lives at the file level so [`tests/two_peer_seek_loop.rs`] can drive both
+/// peers' echo guards through the actual ping-pong scenario without spinning
+/// up a full `App` event loop. `on_mpv_time_pos` is a thin async wrapper over
+/// this function — keep them in sync.
+pub fn classify_post_seek_timepos(
+    echo: &mut EchoGuard,
+    media_pos_ms: u64,
+    paused: bool,
+    speed_centi: u16,
+    now_ms: u64,
+) -> Input {
+    if echo.consume_seek(media_pos_ms, now_ms) {
+        Input::MpvStateUpdate {
+            media_pos_ms,
+            paused,
+            speed_centi,
+        }
+    } else {
+        Input::LocalControl {
+            action: ControlAction::Seek { media_pos_ms },
+            now_ms,
+        }
+    }
 }
 
 /// How often we fan out our own heartbeat and run drift correction.
@@ -388,20 +439,14 @@ impl App {
         let playback = self.state.local_playback();
         if self.seek_just_completed {
             self.seek_just_completed = false;
-            if self.echo.consume_seek(ms, now) {
-                self.apply_and_dispatch(Input::MpvStateUpdate {
-                    media_pos_ms: ms,
-                    paused: playback.paused,
-                    speed_centi: playback.speed_centi,
-                })
-                .await;
-            } else {
-                self.apply_and_dispatch(Input::LocalControl {
-                    action: ControlAction::Seek { media_pos_ms: ms },
-                    now_ms: now,
-                })
-                .await;
-            }
+            let input = classify_post_seek_timepos(
+                &mut self.echo,
+                ms,
+                playback.paused,
+                playback.speed_centi,
+                now,
+            );
+            self.apply_and_dispatch(input).await;
             return;
         }
         // Passive playback progress; keeps heartbeat + drift fresh.
@@ -665,14 +710,7 @@ impl App {
         // unconditionally inside the window, otherwise a keyframe-snap drift
         // larger than `SEEK_TOLERANCE_MS` causes a 2-peer ping-pong loop.
         let now = now_ms();
-        match cmd {
-            CoreMpvCommand::Pause(p) => self.echo.record_pause(p, now),
-            CoreMpvCommand::Seek { media_pos_ms } => match origin {
-                MpvDispatchOrigin::Local => self.echo.record_seek(media_pos_ms, now),
-                MpvDispatchOrigin::Remote => self.echo.record_seek_remote(media_pos_ms, now),
-            },
-            CoreMpvCommand::SetSpeed { speed_centi } => self.echo.record_speed(speed_centi, now),
-        }
+        arm_echo_for_dispatch(&mut self.echo, cmd, origin, now);
 
         let Some(mpv) = self.mpv.as_ref() else {
             debug!("mpv disabled; would have sent {cmd:?}");

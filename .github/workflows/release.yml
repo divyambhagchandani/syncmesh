@@ -125,6 +125,31 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: target/${{ matrix.target }}/release/
 
+      # Smoke-test the *signed* release binary before we package and ship.
+      # Catches "binary won't even start" — wrong dynamic-linking, missing
+      # runtime, panic on startup, broken --version path. Runs after
+      # codesign/SignPath so we test exactly what users download.
+      #
+      # Skipped for aarch64-linux-musl because the runner is x86_64 — would
+      # need qemu-binfmt to execute. The native aarch64-darwin on
+      # macos-latest (Apple Silicon) and the x86_64 musl/darwin/windows
+      # builds all run on their host runners.
+      - name: smoke test built binary
+        if: matrix.target != 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN="target/${{ matrix.target }}/release/syncmesh.exe"
+          else
+            BIN="target/${{ matrix.target }}/release/syncmesh"
+          fi
+          out=$("$BIN" --version)
+          test -n "$out" || { echo "syncmesh --version produced no output"; exit 1; }
+          echo "$out"
+          out=$("$BIN" --help)
+          test -n "$out" || { echo "syncmesh --help produced no output"; exit 1; }
+
       - name: package
         shell: bash
         run: |

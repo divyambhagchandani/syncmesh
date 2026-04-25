@@ -62,6 +62,18 @@ use crate::media::MediaCollector;
 use crate::peer_task;
 use crate::ui::UiEvent;
 
+/// Where the batch of `Output`s being dispatched originated.
+///
+/// Used by `send_mpv` to decide whether the echo guard's pending entry should
+/// be tagged local-origin (apply keyframe-snap tolerance) or remote-origin
+/// (consume unconditionally — the post-`PlaybackRestart` `TimePos` is
+/// guaranteed to be ours and re-broadcasting it would cause a ping-pong).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MpvDispatchOrigin {
+    Local,
+    Remote,
+}
+
 /// How often we fan out our own heartbeat and run drift correction.
 const TICK_PERIOD: Duration = Duration::from_secs(1);
 
@@ -473,7 +485,10 @@ impl App {
             received_at_ms: now_ms(),
             rtt_sample_ms,
         });
-        self.dispatch(outs).await;
+        // Outputs from an inbound frame include any `MpvCommand::Seek` we
+        // emit in response to a peer's `ControlAction::Seek`; tag the dispatch
+        // as remote so the echo guard suppresses unconditionally.
+        self.dispatch_remote(outs).await;
     }
 
     /// Spawn a tokio task that dials `addr`. On success the new link comes
@@ -551,9 +566,25 @@ impl App {
         self.dispatch(outs).await;
     }
 
+    /// Dispatch a batch of outputs that resulted from a locally-driven input
+    /// (user action, drift tick, mpv property update, etc.).
     async fn dispatch(&mut self, outs: Vec<Output>) {
+        self.dispatch_with_origin(outs, MpvDispatchOrigin::Local)
+            .await;
+    }
+
+    /// Dispatch a batch of outputs that resulted from an inbound peer frame.
+    /// Any `MpvCommand` in the batch is a direct consequence of a remote
+    /// peer's control event, and the matching mpv echo must be suppressed
+    /// regardless of keyframe-snap drift.
+    async fn dispatch_remote(&mut self, outs: Vec<Output>) {
+        self.dispatch_with_origin(outs, MpvDispatchOrigin::Remote)
+            .await;
+    }
+
+    async fn dispatch_with_origin(&mut self, outs: Vec<Output>, origin: MpvDispatchOrigin) {
         for out in outs {
-            self.dispatch_one(out).await;
+            self.dispatch_one(out, origin).await;
         }
         // Publish a fresh snapshot for the UI after every dispatch. Mutations
         // only happen on this task, so it's safe to send-replace without
@@ -562,13 +593,13 @@ impl App {
         self.snapshot_tx.send_replace(snap);
     }
 
-    async fn dispatch_one(&mut self, out: Output) {
+    async fn dispatch_one(&mut self, out: Output, origin: MpvDispatchOrigin) {
         match out {
             Output::Broadcast(frame) => self.broadcast(self.fill_peer_list_addrs(frame)).await,
             Output::SendTo { to, frame } => {
                 self.send_to(to, self.fill_peer_list_addrs(frame)).await;
             }
-            Output::Mpv(cmd) => self.send_mpv(cmd).await,
+            Output::Mpv(cmd) => self.send_mpv(cmd, origin).await,
             Output::Notify(notice) => log_notice(&notice),
         }
     }
@@ -625,14 +656,21 @@ impl App {
         }
     }
 
-    async fn send_mpv(&mut self, cmd: CoreMpvCommand) {
+    async fn send_mpv(&mut self, cmd: CoreMpvCommand, origin: MpvDispatchOrigin) {
         // Arm the echo guard *before* sending so the inbound property-change
         // edge always races the guard, not the send. We arm even when mpv is
         // disabled: the guard then harmlessly expires without matching.
+        //
+        // Seek origin matters: a remote-origin seek must consume mpv's reply
+        // unconditionally inside the window, otherwise a keyframe-snap drift
+        // larger than `SEEK_TOLERANCE_MS` causes a 2-peer ping-pong loop.
         let now = now_ms();
         match cmd {
             CoreMpvCommand::Pause(p) => self.echo.record_pause(p, now),
-            CoreMpvCommand::Seek { media_pos_ms } => self.echo.record_seek(media_pos_ms, now),
+            CoreMpvCommand::Seek { media_pos_ms } => match origin {
+                MpvDispatchOrigin::Local => self.echo.record_seek(media_pos_ms, now),
+                MpvDispatchOrigin::Remote => self.echo.record_seek_remote(media_pos_ms, now),
+            },
             CoreMpvCommand::SetSpeed { speed_centi } => self.echo.record_speed(speed_centi, now),
         }
 

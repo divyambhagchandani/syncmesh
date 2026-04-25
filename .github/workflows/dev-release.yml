@@ -1,0 +1,173 @@
+name: dev-release
+
+# Rolling pre-release built from the tip of main.
+#
+# Every push to main rebuilds the 5-platform matrix and force-updates a
+# single `dev` GitHub Release (and the underlying `dev` git tag) so users
+# can always grab the latest unreleased binary. The stable release flow in
+# release.yml is unchanged: only `v*` tags publish stable releases that
+# bump the public Homebrew tap.
+#
+# This workflow deliberately skips macOS notarization and Windows SignPath
+# signing — both have finite quotas that running on every commit would
+# burn. Stable `v*` releases still get the full signing path.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# If commits land in quick succession, only build the latest. An older run
+# in flight is cancelled so we never publish a `dev` release that lags
+# behind main.
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zigbuild: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zigbuild: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_zigbuild: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_zigbuild: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_zigbuild: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev-${{ matrix.target }}
+
+      - name: install zig (musl targets only)
+        if: matrix.use_zigbuild
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.13.0"
+
+      - name: install cargo-zigbuild
+        if: matrix.use_zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: build
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_zigbuild }}" = "true" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }} --locked
+          else
+            cargo build --release --target ${{ matrix.target }} --locked
+          fi
+
+      - name: package
+        shell: bash
+        run: |
+          set -eu
+          BIN_DIR=target/${{ matrix.target }}/release
+          OUT_DIR=dist
+          mkdir -p "$OUT_DIR"
+          # Embed the short SHA in the filename so users can tell two dev
+          # builds apart at a glance, without having to inspect timestamps.
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          ARCHIVE_BASE="syncmesh-dev-${SHORT_SHA}-${{ matrix.target }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$OUT_DIR/${ARCHIVE_BASE}.zip" "$BIN_DIR/syncmesh.exe" scripts/syncmesh.lua
+          else
+            tar -czf "$OUT_DIR/${ARCHIVE_BASE}.tar.gz" -C "$BIN_DIR" syncmesh -C ../../../ scripts/syncmesh.lua
+          fi
+
+      - name: sha256
+        shell: bash
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum * > SHA256SUMS-${{ matrix.target }}
+          else
+            shasum -a 256 * > SHA256SUMS-${{ matrix.target }}
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: syncmesh-dev-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish dev release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: aggregate SHA256SUMS
+        run: |
+          cd dist
+          cat SHA256SUMS-* > SHA256SUMS
+          rm SHA256SUMS-*
+
+      # Force-move the `dev` tag to the current commit. Without this step,
+      # softprops/action-gh-release would refuse to update an existing
+      # release if the tag already points at an older commit.
+      - name: reset dev tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # Delete the previous release + tag if they exist. Both are
+          # idempotent — `|| true` covers the bootstrap case where neither
+          # has been created yet.
+          gh release delete dev --yes --cleanup-tag || true
+          # Re-point dev at the commit we just built.
+          git tag -f dev "${{ github.sha }}"
+          git push -f origin refs/tags/dev
+
+      - name: publish dev release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: "Dev build (latest main)"
+          body: |
+            Rolling pre-release built automatically from `main`.
+
+            **Commit:** ${{ github.sha }}
+            **Built:** ${{ github.event.head_commit.timestamp }}
+
+            This build is replaced on every push to main. For stable
+            releases, see the tagged versions on the [releases page](https://github.com/${{ github.repository }}/releases).
+
+            Dev builds are unsigned (no macOS notarization, no Windows
+            Authenticode signature) — Gatekeeper / SmartScreen will warn
+            on first launch. Stable `v*` releases get the full signing
+            path.
+          files: dist/*
+          prerelease: true
+          make_latest: "false"

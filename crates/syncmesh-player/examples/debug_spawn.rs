@@ -1,14 +1,17 @@
 //! Diagnostic: spawn mpv and try to connect, with stderr captured so we can
 //! see what mpv is doing. Not a test — just a focused repro.
+//!
+//! Windows-only: uses named pipes for mpv IPC.
 
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
-
-use tokio::process::Command;
-
+#[cfg(windows)]
 #[tokio::main]
 async fn main() {
+    use std::path::PathBuf;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    use tokio::process::Command;
+
     let mpv_bin = PathBuf::from(r"C:\Program Files\MPV Player\mpv.exe");
     let pipe = format!(r"\\.\pipe\syncmesh-dbg-{}", std::process::id());
     eprintln!("spawning mpv with ipc = {pipe}");
@@ -28,7 +31,6 @@ async fn main() {
 
     let mut child = cmd.spawn().expect("spawn mpv");
 
-    // Poll-connect.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut attempt = 0;
     let path = PathBuf::from(&pipe);
@@ -51,4 +53,9 @@ async fn main() {
     }
     let _ = child.start_kill();
     let _ = child.wait().await;
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("debug_spawn is Windows-only (uses named pipes for mpv IPC).");
 }

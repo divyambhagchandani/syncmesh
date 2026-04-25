@@ -3661,7 +3661,7 @@ dependencies = [
 
 [[package]]
 name = "syncmesh"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3687,7 +3687,7 @@ dependencies = [
 
 [[package]]
 name = "syncmesh-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "postcard",
  "proptest",
@@ -3698,7 +3698,7 @@ dependencies = [
 
 [[package]]
 name = "syncmesh-net"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3717,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "syncmesh-player"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",

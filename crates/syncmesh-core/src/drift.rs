@@ -15,6 +15,18 @@
 //! would make drift diverge rather than converge. The thresholds and overall
 //! approach match the plan; the slow-down-if-ahead convention matches Syncplay
 //! and is what actually converges.
+//!
+//! This module is a pure calculator. Two stability rules are applied by the
+//! caller (`RoomState::on_tick`), which knows the reference peer's identity
+//! and the control-event history:
+//!
+//! - **Hold-off**: drift correction is suspended for `DRIFT_HOLDOFF_MS` after
+//!   any position-carrying control event, because the stored heartbeats still
+//!   report pre-event positions and correcting against them undoes the event.
+//! - **Hard-seek tie-break**: only the peer with the larger `NodeId` of a pair
+//!   acts on `DriftAction::Seek` (the smaller one degrades to a speed nudge),
+//!   so two peers can never hard-seek toward each other's stale positions and
+//!   oscillate.
 
 /// Threshold above which we hard-seek rather than adjust speed, in ms.
 pub const DRIFT_HARD_SEEK_MS: i64 = 1_000;

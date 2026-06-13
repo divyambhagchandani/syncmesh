@@ -28,6 +28,11 @@
 //!   so two peers can never hard-seek toward each other's stale positions and
 //!   oscillate.
 
+/// Normal (1.00x) playback speed in centi-units. Mirrors
+/// [`crate::state::SPEED_NORMAL_CENTI`]; kept local so this pure calculator
+/// doesn't depend on the state module.
+const SPEED_NORMAL_CENTI: u16 = 100;
+
 /// Threshold above which we hard-seek rather than adjust speed, in ms.
 pub const DRIFT_HARD_SEEK_MS: i64 = 1_000;
 
@@ -51,15 +56,27 @@ pub enum DriftAction {
 }
 
 /// Snapshot of a remote peer's state at the moment its last heartbeat was
-/// received. `origin_ts_ms` is the peer's wall clock at emission; we trust it
-/// and compensate per-peer via `one_way_ms`.
+/// received.
+///
+/// Projection is anchored on `received_at_ms` — **our** local clock when the
+/// heartbeat arrived — not the peer's emission timestamp. Using the remote
+/// wall clock would feed any inter-machine clock skew straight into perceived
+/// drift (skew > 1 s, common on un-NTP'd Windows boxes, would pin every tick
+/// past the hard-seek threshold and loop forever). One-way latency is still
+/// added so the anchor reflects where the peer was when it *emitted* the
+/// heartbeat, not when we received it.
 #[derive(Debug, Clone, Copy)]
 pub struct ReferencePeer {
     pub media_pos_ms: u64,
-    pub origin_ts_ms: u64,
+    /// Local wall clock (ours) at the moment this heartbeat was received.
+    pub received_at_ms: u64,
     pub paused: bool,
     /// Half the current RTT EWMA to this peer.
     pub one_way_ms: u32,
+    /// The reference peer's playback speed (1.00x == 100). Projection
+    /// extrapolates the reference forward at its own speed, so a room-wide
+    /// non-1.0 speed doesn't accumulate `|speed-1| x elapsed` of phantom drift.
+    pub speed_centi: u16,
 }
 
 /// Our own local playback state.
@@ -70,17 +87,29 @@ pub struct LocalPlayback {
 }
 
 /// Project where the reference peer is *now*, given its last heartbeat and the
-/// current wall clock, accounting for network one-way latency.
+/// current wall clock, accounting for network one-way latency and the
+/// reference's playback speed.
 ///
-/// Returned as a signed `i64` so callers can detect underflow (e.g. a remote
-/// peer reporting a timestamp in the future) rather than silently wrapping.
+/// `elapsed` is measured against our local receive clock (`received_at_ms`),
+/// not the peer's emission timestamp, so inter-machine clock skew never leaks
+/// into the projection. The elapsed wall time is scaled by the reference's
+/// `speed_centi`: at 2x the reference covers 2 ms of media per ms of wall time.
+///
+/// Returned as a signed `i64` so callers can detect underflow (e.g. a receive
+/// time in the future from a clock that jumped) rather than silently wrapping.
 /// `check_drift` clamps the result to `>= 0` before use.
 pub fn project_reference(reference: &ReferencePeer, now_ms: u64) -> i64 {
     let now = i64::try_from(now_ms).unwrap_or(i64::MAX);
-    let origin_ts = i64::try_from(reference.origin_ts_ms).unwrap_or(0);
-    let elapsed = now - origin_ts;
+    let received_at = i64::try_from(reference.received_at_ms).unwrap_or(0);
+    let elapsed = now - received_at;
+    // Scale elapsed wall time by the reference's playback speed. Done in i128
+    // to avoid overflow on large positions/elapsed before narrowing back.
+    let scaled = i64::try_from(
+        i128::from(elapsed) * i128::from(reference.speed_centi) / i128::from(SPEED_NORMAL_CENTI),
+    )
+    .unwrap_or(i64::MAX);
     let pos = i64::try_from(reference.media_pos_ms).unwrap_or(i64::MAX);
-    pos + elapsed + i64::from(reference.one_way_ms)
+    pos + scaled + i64::from(reference.one_way_ms)
 }
 
 /// Decide the drift action for this local tick.
@@ -121,12 +150,15 @@ pub fn check_drift(reference: &ReferencePeer, local: &LocalPlayback, now_ms: u64
 mod tests {
     use super::*;
 
-    fn ref_at(pos_ms: u64, ts_ms: u64, one_way: u32) -> ReferencePeer {
+    /// `received_ms` is our local clock when the heartbeat arrived (the
+    /// projection anchor), `one_way` the per-peer latency compensation.
+    fn ref_at(pos_ms: u64, received_ms: u64, one_way: u32) -> ReferencePeer {
         ReferencePeer {
             media_pos_ms: pos_ms,
-            origin_ts_ms: ts_ms,
+            received_at_ms: received_ms,
             paused: false,
             one_way_ms: one_way,
+            speed_centi: SPEED_NORMAL_CENTI,
         }
     }
 
@@ -231,9 +263,10 @@ mod tests {
     fn both_paused_returns_none() {
         let r = ReferencePeer {
             media_pos_ms: 10_000,
-            origin_ts_ms: 1_000,
+            received_at_ms: 1_000,
             paused: true,
             one_way_ms: 0,
+            speed_centi: SPEED_NORMAL_CENTI,
         };
         let me = LocalPlayback {
             media_pos_ms: 9_000,
@@ -260,6 +293,38 @@ mod tests {
         // projected = 0 + (1000 - 10000) = -9000, clamp → 0. diff = 50 - 0 = 50
         // → within deadband → None.
         assert_eq!(check_drift(&r, &me, 1_000), DriftAction::None);
+    }
+
+    #[test]
+    fn projection_is_immune_to_remote_clock_skew() {
+        // H3 regression. The reference machine's wall clock is 1 hour ahead of
+        // ours, but the heartbeat still arrived on *our* clock at received=1_000
+        // reporting pos=10_000. With local-receive-time anchoring the skew is
+        // irrelevant: projecting at now=1_000 gives exactly 10_000.
+        //
+        // (Under the old origin-timestamp anchoring this same scenario would
+        // have projected 10_000 + 3_600_000 of phantom drift and hard-seeked
+        // every single tick.)
+        let r = ref_at(10_000, 1_000, 0);
+        assert_eq!(project_reference(&r, 1_000), 10_000);
+        let me = me_at(10_000);
+        assert_eq!(check_drift(&r, &me, 1_000), DriftAction::None);
+    }
+
+    #[test]
+    fn projection_scales_with_reference_speed() {
+        // H4 regression. Reference is at 10_000 when received at t=1_000,
+        // playing at 2.00x. One second of wall time later (now=2_000) it has
+        // advanced 2_000 ms of media → projects to 12_000. A local peer also
+        // at 12_000 is in sync; the old 1.0x extrapolation would have placed
+        // the reference at 11_000 and hard-seeked the 1 s "drift" away.
+        let mut r = ref_at(10_000, 1_000, 0);
+        r.speed_centi = 200;
+        assert_eq!(project_reference(&r, 2_000), 12_000);
+        assert_eq!(check_drift(&r, &me_at(12_000), 2_000), DriftAction::None);
+        // A local peer at 11_500 is 500 ms behind the speed-aware projection →
+        // a soft speed-up, not the spurious hard seek the 1.0x math produced.
+        assert_eq!(check_drift(&r, &me_at(11_500), 2_000), DriftAction::Speedup);
     }
 
     #[test]

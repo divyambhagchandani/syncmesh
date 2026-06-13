@@ -47,6 +47,7 @@ impl Mesh {
                     room.apply(Input::PeerConnected {
                         node: *other,
                         nickname: format!("{other:?}"),
+                        now_ms: 0,
                     });
                 }
             }

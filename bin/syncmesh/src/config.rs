@@ -158,6 +158,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_override_mode() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "override_mode = true\n").unwrap();
+        let cfg = Config::load_or_write_template(&path).unwrap();
+        assert_eq!(cfg.override_mode, Some(true));
+    }
+
+    #[test]
     fn malformed_toml_surfaces_error() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("config.toml");

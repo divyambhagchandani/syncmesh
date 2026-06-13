@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use syncmesh_core::RoomState;
+use syncmesh_core::{Input, RoomState};
 use syncmesh_net::{
     MeshConfig, MeshEndpoint, PeerLink, decode_ticket, endpoint_id_to_node, identity,
 };
@@ -33,6 +33,7 @@ struct Settings {
     nickname: Option<String>,
     mpv_binary: Option<PathBuf>,
     mpv_spawn: MpvSpawn,
+    override_mode: bool,
     relay: Option<String>,
     log_level: String,
     log_file: Option<PathBuf>,
@@ -58,6 +59,7 @@ impl Settings {
             nickname,
             mpv_binary,
             mpv_spawn,
+            override_mode: config.override_mode.unwrap_or(false),
             relay: config.relay.filter(|s| !s.is_empty()),
             log_level: config.log_level.unwrap_or_else(|| "info".to_string()),
             log_file: cli.log_file.clone(),
@@ -136,7 +138,11 @@ async fn main() -> Result<()> {
     };
 
     // Room state + event channel
-    let state = RoomState::new(local_node, local_nickname.clone());
+    let mut state = RoomState::new(local_node, local_nickname.clone());
+    if settings.override_mode {
+        info!("ready-gate override enabled at startup (config override_mode = true)");
+        let _ = state.apply(Input::SetOverride { enabled: true });
+    }
     let (events_tx, events_rx) = mpsc::channel::<LoopEvent>(EVENT_QUEUE);
     let (mut app, snapshot_rx) = App::new(state, mesh.clone(), mpv_handle, events_tx.clone());
 

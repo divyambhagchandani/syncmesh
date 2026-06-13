@@ -42,6 +42,7 @@ fn remote_driven_seek_does_not_re_broadcast_when_mpv_snaps_far_off() {
     let _ = state.apply(Input::PeerConnected {
         node: a,
         nickname: "alice".into(),
+        now_ms: 0,
     });
 
     // A clicks ten minutes ahead and broadcasts. Peer B receives the frame.

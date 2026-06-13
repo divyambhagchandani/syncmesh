@@ -111,10 +111,12 @@ fn forward_seek_while_playing_does_not_oscillate() {
     let _ = a.state.apply(Input::PeerConnected {
         node: id_b,
         nickname: "bob".into(),
+        now_ms: 0,
     });
     let _ = b.state.apply(Input::PeerConnected {
         node: id_a,
         nickname: "alice".into(),
+        now_ms: 0,
     });
 
     // Both playing in sync at 60 s.

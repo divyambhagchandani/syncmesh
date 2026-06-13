@@ -65,13 +65,23 @@ use crate::ui::UiEvent;
 /// Where the batch of `Output`s being dispatched originated.
 ///
 /// Used by `send_mpv` to decide whether the echo guard's pending entry should
-/// be tagged local-origin (apply keyframe-snap tolerance) or remote-origin
-/// (consume unconditionally — the post-`PlaybackRestart` `TimePos` is
-/// guaranteed to be ours and re-broadcasting it would cause a ping-pong).
+/// be tagged local-origin (apply keyframe-snap tolerance) or
+/// consume-unconditionally (the post-`PlaybackRestart` `TimePos` is guaranteed
+/// to be ours and re-broadcasting it would cause a ping-pong).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MpvDispatchOrigin {
+    /// A user keypress in the mpv window or our own UI. A seek edge inside the
+    /// window is tolerance-matched, so a second user seek before mpv replies
+    /// is still recognised as a fresh action.
     Local,
+    /// We applied an inbound peer control event. The next seek edge is
+    /// unambiguously ours; consume it regardless of keyframe-snap distance.
     Remote,
+    /// We issued the seek ourselves as drift correction in `on_tick`. Like
+    /// `Remote`, the resulting edge is ours and must never be re-broadcast:
+    /// on a sparse-keyframe encode mpv can snap > `SEEK_TOLERANCE_MS` from the
+    /// target, and tolerance-matching would miss it and seek the whole mesh.
+    Drift,
 }
 
 /// How often we fan out our own heartbeat and run drift correction.
@@ -282,7 +292,11 @@ impl App {
                         media_pos_ms: playback.media_pos_ms,
                     }
                 };
-                self.apply_and_dispatch(Input::LocalControl {
+                // UI intent: mpv hasn't been told yet, so this must emit the
+                // matching MpvCommand locally too (not just broadcast). The
+                // echo guard is armed by the Local dispatch path so mpv's
+                // resulting Pause echo isn't re-broadcast as a fresh action.
+                self.apply_and_dispatch(Input::UiControl {
                     action,
                     now_ms: now,
                 })
@@ -314,7 +328,11 @@ impl App {
     async fn on_tick(&mut self) {
         let now = now_ms();
         let outs = self.state.apply(Input::Tick { now_ms: now });
-        self.dispatch(outs).await;
+        // Any `MpvCommand::Seek` in this batch is a self-issued drift
+        // correction, not a user action — tag it Drift so its mpv echo is
+        // consumed unconditionally and never re-broadcast as a room seek.
+        self.dispatch_with_origin(outs, MpvDispatchOrigin::Drift)
+            .await;
     }
 
     async fn on_mpv(&mut self, ev: MpvEvent) {
@@ -549,6 +567,7 @@ impl App {
         let outs = self.state.apply(Input::PeerConnected {
             node,
             nickname: format!("{node:?}"),
+            now_ms: now_ms(),
         });
         self.dispatch(outs).await;
     }
@@ -669,7 +688,11 @@ impl App {
             CoreMpvCommand::Pause(p) => self.echo.record_pause(p, now),
             CoreMpvCommand::Seek { media_pos_ms } => match origin {
                 MpvDispatchOrigin::Local => self.echo.record_seek(media_pos_ms, now),
-                MpvDispatchOrigin::Remote => self.echo.record_seek_remote(media_pos_ms, now),
+                // Remote-applied and self-issued drift seeks both produce an
+                // unambiguously-ours echo; consume it unconditionally.
+                MpvDispatchOrigin::Remote | MpvDispatchOrigin::Drift => {
+                    self.echo.record_seek_remote(media_pos_ms, now);
+                }
             },
             CoreMpvCommand::SetSpeed { speed_centi } => self.echo.record_speed(speed_centi, now),
         }

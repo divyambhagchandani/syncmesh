@@ -50,6 +50,19 @@ impl ReadyGate {
         self.peers.insert(node, ready);
     }
 
+    /// Seed a peer at `ready` *only if it isn't already tracked*. Used when a
+    /// presence event (`Join`/`PeerList`/connect) introduces a peer: a peer we
+    /// already know may have a genuine `true` we must not clobber back to
+    /// `false`.
+    pub fn set_if_absent(&mut self, node: NodeId, ready: bool) {
+        self.peers.entry(node).or_insert(ready);
+    }
+
+    /// Whether a node is currently tracked by the gate.
+    pub fn contains(&self, node: &NodeId) -> bool {
+        self.peers.contains_key(node)
+    }
+
     /// Remove a peer (e.g. on disconnect).
     pub fn remove(&mut self, node: &NodeId) {
         self.peers.remove(node);
@@ -176,6 +189,20 @@ mod tests {
         g.set(n(4), true);
         let laggards: Vec<_> = g.not_ready().copied().collect();
         assert_eq!(laggards, vec![n(2), n(3)]);
+    }
+
+    #[test]
+    fn set_if_absent_only_seeds_unknown_nodes() {
+        let mut g = ReadyGate::new();
+        g.set(n(1), true);
+        // Existing node: not clobbered.
+        g.set_if_absent(n(1), false);
+        assert_eq!(g.get(&n(1)), Some(true));
+        // New node: seeded.
+        g.set_if_absent(n(2), false);
+        assert_eq!(g.get(&n(2)), Some(false));
+        assert!(g.contains(&n(1)));
+        assert!(!g.contains(&n(3)));
     }
 
     #[test]

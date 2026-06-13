@@ -99,11 +99,21 @@ pub enum Input {
         received_at_ms: u64,
         rtt_sample_ms: Option<u32>,
     },
-    /// mpv reported a new playback state (new position, pause toggled, etc.).
-    /// The net layer decides whether the change is user-initiated or echoed
-    /// from an inbound control event — only user-initiated changes should
-    /// reach this input.
+    /// A user-initiated control *edge reported by mpv* (the user hit `space`
+    /// in the mpv window, dragged the timeline, etc.). mpv has *already*
+    /// applied the change, so the handler only broadcasts it to the mesh — it
+    /// must not echo an `MpvCommand` back. The net layer is responsible for
+    /// filtering out edges that are echoes of commands we issued.
     LocalControl {
+        action: ControlAction,
+        now_ms: u64,
+    },
+    /// A user-initiated control action originating in *our own UI* (e.g. the
+    /// TUI `space` key), where mpv has **not** yet been told. Unlike
+    /// [`Input::LocalControl`], the handler emits both the mesh `Broadcast`
+    /// *and* the matching local `MpvCommand`s, so the local player actually
+    /// follows the intent instead of only the remote peers.
+    UiControl {
         action: ControlAction,
         now_ms: u64,
     },
@@ -131,9 +141,12 @@ pub enum Input {
         now_ms: u64,
     },
     /// Peer connected. The net layer gives us its announced nickname.
+    /// `now_ms` stamps the auto-seek we send the joiner so it carries a real
+    /// wall clock (it feeds conflict resolution on the receiving side).
     PeerConnected {
         node: NodeId,
         nickname: String,
+        now_ms: u64,
     },
     PeerDisconnected {
         node: NodeId,
@@ -337,6 +350,7 @@ impl RoomState {
                 rtt_sample_ms,
             } => self.on_frame(from, frame, received_at_ms, rtt_sample_ms),
             Input::LocalControl { action, now_ms } => self.on_local_control(action, now_ms),
+            Input::UiControl { action, now_ms } => self.on_ui_control(action, now_ms),
             Input::LocalReady { ready, now_ms } => self.on_local_ready(ready, now_ms),
             Input::LocalChat { text, now_ms } => self.on_local_chat(text, now_ms),
             Input::MpvStateUpdate {
@@ -352,7 +366,11 @@ impl RoomState {
                 Vec::new()
             }
             Input::LocalMediaChanged { media, now_ms } => self.on_local_media(media, now_ms),
-            Input::PeerConnected { node, nickname } => self.on_peer_connected(node, nickname),
+            Input::PeerConnected {
+                node,
+                nickname,
+                now_ms,
+            } => self.on_peer_connected(node, nickname, now_ms),
             Input::PeerDisconnected { node } => self.on_peer_disconnected(node),
             Input::SetOverride { enabled } => {
                 self.ready_gate.set_override(enabled);
@@ -446,7 +464,7 @@ impl RoomState {
     }
 
     fn pick_reference(&self, now_ms: u64) -> Option<(NodeId, ReferencePeer)> {
-        let mut best: Option<(NodeId, &StateHeartbeat, u32)> = None;
+        let mut best: Option<(NodeId, &PeerState, &StateHeartbeat, u32)> = None;
         for (node, peer) in &self.peers {
             let Some(hb) = &peer.last_heartbeat else {
                 continue;
@@ -466,22 +484,30 @@ impl RoomState {
                 continue;
             }
             let one_way = peer.rtt.one_way_ms();
+            // "Freshest" is measured by our local receive clock, not the
+            // peer's emission timestamp — comparing `origin_ts_ms` across
+            // peers pits their wall clocks against each other, so a peer with
+            // a fast clock would always win regardless of actual recency.
             match best {
-                None => best = Some((*node, hb, one_way)),
-                Some((_, best_hb, _)) if hb.origin_ts_ms > best_hb.origin_ts_ms => {
-                    best = Some((*node, hb, one_way));
+                None => best = Some((*node, peer, hb, one_way)),
+                Some((_, best_peer, _, _))
+                    if peer.last_heartbeat_received_at_ms
+                        > best_peer.last_heartbeat_received_at_ms =>
+                {
+                    best = Some((*node, peer, hb, one_way));
                 }
                 _ => {}
             }
         }
-        best.map(|(node, hb, one_way)| {
+        best.map(|(node, peer, hb, one_way)| {
             (
                 node,
                 ReferencePeer {
                     media_pos_ms: hb.media_pos_ms,
-                    origin_ts_ms: hb.origin_ts_ms,
+                    received_at_ms: peer.last_heartbeat_received_at_ms,
                     paused: hb.paused,
                     one_way_ms: one_way,
+                    speed_centi: hb.speed_centi,
                 },
             )
         })
@@ -623,12 +649,20 @@ impl RoomState {
         received_at_ms: u64,
     ) -> Vec<Output> {
         let mut outs = Vec::new();
+        // Only accept heartbeat state from a peer we actually have a live link
+        // to. A heartbeat from an unknown node (a forged origin, or one racing
+        // its own disconnect) must not seed a ghost ready-gate entry that no
+        // `Leave`/`PeerDisconnected` will ever clear — that would pin the room
+        // at `Pending` forever.
+        let known = self.peers.contains_key(&from);
         if let Some(peer) = self.peers.get_mut(&from) {
             peer.last_heartbeat = Some(hb.clone());
             peer.last_heartbeat_received_at_ms = received_at_ms;
         }
         // Update ready gate from heartbeat (authoritative signal).
-        self.ready_gate.set(from, hb.ready);
+        if known {
+            self.ready_gate.set(from, hb.ready);
+        }
 
         // Media mismatch check.
         if let Some(peer_media) = &hb.media_id {
@@ -664,7 +698,9 @@ impl RoomState {
                 if let Some(peer) = self.peers.get_mut(&node) {
                     peer.nickname = nickname;
                 }
-                self.ready_gate.set(node, false);
+                // Seed only if unknown — a re-announced `Join` for a peer that
+                // already flipped ready must not reset it to false.
+                self.ready_gate.set_if_absent(node, false);
                 Vec::new()
             }
             PresenceEvent::Leave { node } => {
@@ -673,7 +709,12 @@ impl RoomState {
                 Vec::new()
             }
             PresenceEvent::Ready { node, ready } => {
-                self.ready_gate.set(node, ready);
+                // Ignore readiness for a node we don't track (self or a live
+                // peer). Otherwise a stray/forged `Ready{false}` plants a ghost
+                // entry that wedges the gate at `Pending`.
+                if node == self.local || self.peers.contains_key(&node) {
+                    self.ready_gate.set(node, ready);
+                }
                 Vec::new()
             }
             PresenceEvent::Rename { node, nickname } => {
@@ -697,7 +738,8 @@ impl RoomState {
                     if let Some(peer) = self.peers.get_mut(&node) {
                         peer.nickname = nickname;
                     }
-                    self.ready_gate.set(node, false);
+                    // Seed only if unknown; never clobber a known peer's ready.
+                    self.ready_gate.set_if_absent(node, false);
                 }
                 Vec::new()
             }
@@ -719,7 +761,52 @@ impl RoomState {
 
     // --- Local actions ---
 
+    /// A control edge mpv already applied (user acted in the player window).
+    /// Broadcast only — emitting an `MpvCommand` here would re-drive the player
+    /// it came from and arm a needless echo-guard entry.
     fn on_local_control(&mut self, action: ControlAction, now_ms: u64) -> Vec<Output> {
+        self.apply_local_control(action, now_ms, false)
+    }
+
+    /// A control action the local UI just intended (e.g. TUI `space`). mpv has
+    /// not been told yet, so we emit the matching `MpvCommand`s *and* broadcast.
+    /// The caller dispatches these with the echo guard armed so mpv's resulting
+    /// property echo isn't re-broadcast as a fresh user action.
+    fn on_ui_control(&mut self, action: ControlAction, now_ms: u64) -> Vec<Output> {
+        self.apply_local_control(action, now_ms, true)
+    }
+
+    /// Shared body for both local-control paths. When `emit_mpv` is set the
+    /// returned batch is prefixed with the `MpvCommand`s that drive the local
+    /// player to match `action`; otherwise only the mesh broadcast is emitted.
+    fn apply_local_control(
+        &mut self,
+        action: ControlAction,
+        now_ms: u64,
+        emit_mpv: bool,
+    ) -> Vec<Output> {
+        let mut outs = Vec::new();
+
+        // Drive the local player first (UI-origin intent only), mirroring the
+        // inbound-control path so local mpv, state, and the mesh stay coherent.
+        if emit_mpv {
+            match &action {
+                ControlAction::Pause { .. } => outs.push(Output::Mpv(MpvCommand::Pause(true))),
+                ControlAction::Play { .. } => outs.push(Output::Mpv(MpvCommand::Pause(false))),
+                ControlAction::Seek { media_pos_ms } => outs.push(Output::Mpv(MpvCommand::Seek {
+                    media_pos_ms: *media_pos_ms,
+                })),
+                ControlAction::SetSpeed { speed_centi } => {
+                    outs.push(Output::Mpv(MpvCommand::SetSpeed {
+                        speed_centi: *speed_centi,
+                    }));
+                }
+                // We can't force mpv to load a file from here; matches the
+                // inbound `MediaChanged` path which also emits no command.
+                ControlAction::MediaChanged { .. } => {}
+            }
+        }
+
         // Update local state to match the action.
         match &action {
             ControlAction::Pause { media_pos_ms } => {
@@ -752,7 +839,8 @@ impl RoomState {
             action,
         };
         self.last_applied_control = Some(ev.clone());
-        vec![Output::Broadcast(Frame::Control(ev))]
+        outs.push(Output::Broadcast(Frame::Control(ev)));
+        outs
     }
 
     fn on_local_ready(&mut self, ready: bool, _now_ms: u64) -> Vec<Output> {
@@ -787,7 +875,7 @@ impl RoomState {
         vec![Output::Broadcast(Frame::Control(ev))]
     }
 
-    fn on_peer_connected(&mut self, node: NodeId, nickname: String) -> Vec<Output> {
+    fn on_peer_connected(&mut self, node: NodeId, nickname: String, now_ms: u64) -> Vec<Output> {
         if node == self.local {
             return Vec::new();
         }
@@ -799,7 +887,9 @@ impl RoomState {
                 new_peer = true;
                 PeerState::new(nickname.clone())
             });
-        self.ready_gate.set(node, false);
+        // Don't clobber a known peer's ready flag on reconnect; only seed a
+        // fresh entry as not-ready.
+        self.ready_gate.set_if_absent(node, false);
 
         if !new_peer {
             return Vec::new();
@@ -826,21 +916,27 @@ impl RoomState {
             Output::Broadcast(Frame::Presence(PresenceEvent::Join { node, nickname })),
         ];
         // Auto-seek the new joiner to our current position (plan decision 12).
-        // In a real mesh, each existing peer would send this — for v1 we send
-        // it unconditionally; the joiner deduplicates by seq.
-        self.local_seq += 1;
-        let seek_ev = ControlEvent {
-            origin: self.local,
-            origin_ts_ms: 0, // net layer should overwrite with its own clock
-            seq: self.local_seq,
-            action: ControlAction::Seek {
-                media_pos_ms: self.local_playback.media_pos_ms,
-            },
-        };
-        outs.push(Output::SendTo {
-            to: node,
-            frame: Frame::Control(seek_ev),
-        });
+        //
+        // Only the side that *has media loaded* sends this. `on_peer_connected`
+        // runs on both ends of a new link, and a joiner that hasn't opened a
+        // file yet sits at `media_pos_ms == 0`; without this gate it would send
+        // `Seek{0}` to the host, yanking the whole room back to 0:00. A peer
+        // with no media has nothing to anchor the room to, so it stays silent.
+        if self.local_media.is_some() {
+            self.local_seq += 1;
+            let seek_ev = ControlEvent {
+                origin: self.local,
+                origin_ts_ms: now_ms,
+                seq: self.local_seq,
+                action: ControlAction::Seek {
+                    media_pos_ms: self.local_playback.media_pos_ms,
+                },
+            };
+            outs.push(Output::SendTo {
+                to: node,
+                frame: Frame::Control(seek_ev),
+            });
+        }
         outs
     }
 
@@ -904,6 +1000,7 @@ mod tests {
         let outs = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice".into(),
+            now_ms: 0,
         });
         assert!(outs.iter().any(|o| matches!(
             o,
@@ -925,11 +1022,13 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice".into(),
+            now_ms: 0,
         });
         // Reconnect with different nickname: updates in place, no roster resend.
         let outs = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice2".into(),
+            now_ms: 0,
         });
         assert!(outs.iter().all(|o| !matches!(
             o,
@@ -947,6 +1046,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice".into(),
+            now_ms: 0,
         });
         let outs = r.apply(Input::PeerDisconnected { node: n(2) });
         assert_eq!(r.peer_count(), 0);
@@ -980,6 +1080,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let _ = r.apply(Input::LocalReady {
             ready: true,
@@ -1007,6 +1108,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let ev = ControlEvent {
             origin: n(2),
@@ -1046,10 +1148,12 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let _ = r.apply(Input::PeerConnected {
             node: n(3),
             nickname: "b".into(),
+            now_ms: 0,
         });
         // Apply pause from n(2) at ts=1000.
         let first = ControlEvent {
@@ -1092,6 +1196,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let ev = ControlEvent {
             origin: n(2),
@@ -1126,6 +1231,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let ev = ControlEvent {
             origin: n(2),
@@ -1164,6 +1270,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         // Local is at 10_000; peer heartbeat says they're at 10_500 at the
         // same wall-clock → I'm 500 ms behind → Speedup.
@@ -1195,6 +1302,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(0),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1225,6 +1333,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1261,6 +1370,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(0),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1295,6 +1405,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(0),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1341,6 +1452,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(0),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1380,6 +1492,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(0),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1416,6 +1529,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(0),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1456,6 +1570,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 10_000,
@@ -1540,6 +1655,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let msg = ChatMessage {
             origin: n(2),
@@ -1564,6 +1680,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::LocalMediaChanged {
             media: MediaId {
@@ -1600,6 +1717,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::LocalMediaChanged {
             media: MediaId {
@@ -1638,6 +1756,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let _ = r.apply(Input::LocalReady {
             ready: true,
@@ -1657,6 +1776,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         // Start paused so we can observe the transition to playing.
         r.apply(Input::MpvStateUpdate {
@@ -1698,6 +1818,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::MpvStateUpdate {
             media_pos_ms: 0,
@@ -1740,6 +1861,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let media = MediaId {
             filename_lower: "a.mkv".into(),
@@ -1775,6 +1897,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         r.apply(Input::LocalMediaChanged {
             media: MediaId {
@@ -1818,6 +1941,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let ev = ControlEvent {
             origin: n(2),
@@ -1855,6 +1979,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "a".into(),
+            now_ms: 0,
         });
         let mut h = hb(n(2), 1_000, 0, true, false);
         h.media_id = Some(MediaId {
@@ -1908,6 +2033,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice".into(),
+            now_ms: 0,
         });
         // With local ready + peer not ready → Pending.
         let _ = r.apply(Input::LocalReady {
@@ -1934,6 +2060,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice".into(),
+            now_ms: 0,
         });
         let outs = r.apply(Input::FrameReceived {
             from: n(2),
@@ -1992,6 +2119,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "old-name".into(),
+            now_ms: 0,
         });
         let _ = r.apply(Input::FrameReceived {
             from: n(3),
@@ -2096,6 +2224,7 @@ mod tests {
         let _ = r.apply(Input::PeerConnected {
             node: n(2),
             nickname: "alice".into(),
+            now_ms: 0,
         });
         let _ = r.apply(Input::FrameReceived {
             from: n(2),
@@ -2137,5 +2266,209 @@ mod tests {
         assert!(r.snapshot().override_enabled);
         let _ = r.apply(Input::SetOverride { enabled: false });
         assert!(!r.snapshot().override_enabled);
+    }
+
+    // --- H1: reciprocal auto-seek ---
+
+    fn media(name: &str) -> MediaId {
+        MediaId {
+            filename_lower: name.into(),
+            size_bytes: 1,
+            duration_s: 1,
+        }
+    }
+
+    #[test]
+    fn peer_connect_without_local_media_emits_no_auto_seek() {
+        // A joiner that hasn't opened a file must not send Seek{0} to the host,
+        // which would yank the whole room back to 0:00 (H1).
+        let mut r = new_room();
+        let outs = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+            now_ms: 5_000,
+        });
+        assert!(
+            !outs.iter().any(|o| matches!(
+                o,
+                Output::SendTo {
+                    frame: Frame::Control(ControlEvent {
+                        action: ControlAction::Seek { .. },
+                        ..
+                    }),
+                    ..
+                }
+            )),
+            "no auto-seek should be sent when we have no media loaded, got {outs:?}"
+        );
+    }
+
+    #[test]
+    fn peer_connect_with_local_media_emits_auto_seek_stamped_with_clock() {
+        // The side that *has* media still seeks the joiner to its position, and
+        // the event carries a real wall clock (not the old origin_ts_ms: 0 that
+        // would always lose conflict resolution).
+        let mut r = new_room();
+        r.apply(Input::LocalMediaChanged {
+            media: media("film.mkv"),
+            now_ms: 100,
+        });
+        r.apply(Input::MpvStateUpdate {
+            media_pos_ms: 7_777,
+            paused: false,
+            speed_centi: SPEED_NORMAL_CENTI,
+        });
+        let outs = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+            now_ms: 4_242,
+        });
+        let seek = outs.iter().find_map(|o| match o {
+            Output::SendTo {
+                to,
+                frame:
+                    Frame::Control(ev @ ControlEvent {
+                        action: ControlAction::Seek { media_pos_ms },
+                        ..
+                    }),
+            } if *to == n(2) => Some((*media_pos_ms, ev.origin_ts_ms)),
+            _ => None,
+        });
+        assert_eq!(
+            seek,
+            Some((7_777, 4_242)),
+            "auto-seek must target our position and carry now_ms, got {outs:?}"
+        );
+    }
+
+    // --- H2: UI-origin control drives local mpv ---
+
+    #[test]
+    fn ui_control_pause_emits_mpv_command_and_broadcast() {
+        let mut r = new_room();
+        let outs = r.apply(Input::UiControl {
+            action: ControlAction::Pause { media_pos_ms: 1_234 },
+            now_ms: 1,
+        });
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Output::Mpv(MpvCommand::Pause(true)))),
+            "UI pause must drive local mpv, got {outs:?}"
+        );
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Output::Broadcast(Frame::Control(_)))),
+            "UI pause must also broadcast to the mesh"
+        );
+        assert!(r.local_playback().paused);
+        assert_eq!(r.local_playback().media_pos_ms, 1_234);
+    }
+
+    #[test]
+    fn ui_control_play_emits_unpause_mpv_command() {
+        let mut r = new_room();
+        let outs = r.apply(Input::UiControl {
+            action: ControlAction::Play { media_pos_ms: 0 },
+            now_ms: 1,
+        });
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o, Output::Mpv(MpvCommand::Pause(false)))),
+            "UI play must unpause local mpv, got {outs:?}"
+        );
+        assert!(!r.local_playback().paused);
+    }
+
+    #[test]
+    fn local_control_from_mpv_edge_emits_no_mpv_command() {
+        // The mpv-origin path must stay broadcast-only: mpv already applied the
+        // edge, re-commanding it would be redundant churn.
+        let mut r = new_room();
+        let outs = r.apply(Input::LocalControl {
+            action: ControlAction::Pause { media_pos_ms: 1_234 },
+            now_ms: 1,
+        });
+        assert!(
+            !outs.iter().any(|o| matches!(o, Output::Mpv(_))),
+            "mpv-origin LocalControl must not echo a command back, got {outs:?}"
+        );
+    }
+
+    // --- M2: ready-gate ghost entries ---
+
+    #[test]
+    fn ready_presence_for_unknown_node_is_ignored() {
+        // Self-only room that is AllReady must not be wedged to Pending by a
+        // stray/forged Ready{false} for a node we don't track.
+        let mut r = new_room();
+        let _ = r.apply(Input::LocalReady {
+            ready: true,
+            now_ms: 1,
+        });
+        assert_eq!(r.ready_state(), ReadyState::AllReady);
+        let _ = r.apply(Input::FrameReceived {
+            from: n(9),
+            frame: Frame::Presence(PresenceEvent::Ready {
+                node: n(9),
+                ready: false,
+            }),
+            received_at_ms: 10,
+            rtt_sample_ms: None,
+        });
+        assert_eq!(r.ready_state(), ReadyState::AllReady);
+        assert!(r.ready_gate().get(&n(9)).is_none());
+    }
+
+    #[test]
+    fn heartbeat_from_unknown_node_does_not_seed_ready_gate() {
+        let mut r = new_room();
+        let _ = r.apply(Input::LocalReady {
+            ready: true,
+            now_ms: 1,
+        });
+        let _ = r.apply(Input::FrameReceived {
+            from: n(9),
+            frame: Frame::Heartbeat(hb(n(9), 1_000, 0, false, false)),
+            received_at_ms: 1_000,
+            rtt_sample_ms: None,
+        });
+        assert_eq!(r.ready_state(), ReadyState::AllReady);
+        assert!(r.ready_gate().get(&n(9)).is_none());
+    }
+
+    #[test]
+    fn rejoin_does_not_clobber_existing_ready() {
+        // A re-broadcast Join for a peer that already flipped ready must not
+        // reset it to false (which would transiently block AllReady).
+        let mut r = new_room();
+        let _ = r.apply(Input::PeerConnected {
+            node: n(2),
+            nickname: "a".into(),
+            now_ms: 0,
+        });
+        let _ = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Ready {
+                node: n(2),
+                ready: true,
+            }),
+            received_at_ms: 1,
+            rtt_sample_ms: None,
+        });
+        assert_eq!(r.ready_gate().get(&n(2)), Some(true));
+        let _ = r.apply(Input::FrameReceived {
+            from: n(2),
+            frame: Frame::Presence(PresenceEvent::Join {
+                node: n(2),
+                nickname: "a-again".into(),
+            }),
+            received_at_ms: 2,
+            rtt_sample_ms: None,
+        });
+        assert_eq!(
+            r.ready_gate().get(&n(2)),
+            Some(true),
+            "re-Join must not clobber a known peer's ready flag"
+        );
     }
 }

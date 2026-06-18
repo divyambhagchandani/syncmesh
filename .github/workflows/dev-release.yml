@@ -83,6 +83,23 @@ jobs:
             cargo build --release --target ${{ matrix.target }} --locked
           fi
 
+      # See release.yml for rationale. Same skip for aarch64-linux-musl.
+      - name: smoke test built binary
+        if: matrix.target != 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -eu
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN="target/${{ matrix.target }}/release/syncmesh.exe"
+          else
+            BIN="target/${{ matrix.target }}/release/syncmesh"
+          fi
+          out=$("$BIN" --version)
+          test -n "$out" || { echo "syncmesh --version produced no output"; exit 1; }
+          echo "$out"
+          out=$("$BIN" --help)
+          test -n "$out" || { echo "syncmesh --help produced no output"; exit 1; }
+
       - name: package
         shell: bash
         run: |
